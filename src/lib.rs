@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Experimental independent Java ME VM research core.
+//! Independent, host-neutral Java ME VM core in safe Rust.
 //!
-//! G1 includes a structural parser. WP02 adds a narrow integer-only execution
-//! proof; it is not a CLDC verifier, class loader, or general VM.
+//! Preserves the bounded G1/WP02 foundations (`archive`, `classfile`,
+//! `execution`, `surface`) and exposes the full Safe Rust VM Core under `vm`.
 
 #![forbid(unsafe_code)]
 
@@ -10,3 +10,4 @@ pub mod archive;
 pub mod classfile;
 pub mod execution;
 pub mod surface;
+pub mod vm;

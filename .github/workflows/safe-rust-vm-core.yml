@@ -1,0 +1,47 @@
+name: Evaluate Safe Rust VM Core candidate
+
+on:
+  push:
+    branches:
+      - audit/agent-safe-rust-vm-core
+  pull_request:
+    paths:
+      - 'src/vm/**'
+      - 'src/lib.rs'
+      - 'tests/vm_core_tests.rs'
+      - '.github/workflows/safe-rust-vm-core.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Format and Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  tests:
+    name: Debug and release tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Debug tests
+        run: cargo test --locked --all-targets
+      - name: Release tests
+        run: cargo test --locked --release --all-targets
