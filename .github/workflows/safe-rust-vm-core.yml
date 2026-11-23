@@ -43,8 +43,8 @@ jobs:
       - name: Check compiler lints
         run: cargo clippy --locked --all-targets -- -D warnings
 
-  tests:
-    name: Debug and release tests
+  tests-debug:
+    name: Debug tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -53,7 +53,18 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - name: Debug tests
+      - name: Test debug build
         run: cargo test --locked --all-targets
-      - name: Release tests
+
+  tests-release:
+    name: Release tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Test optimized build
         run: cargo test --locked --release --all-targets

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Independent audit regression: restoring a valid snapshot must respect the
-//! receiving VM's resource limits before any state is committed.
+//! Independent audit regressions for hostile JVM class files and VM snapshots.
 
 use j2me_vm::vm::{CldcVersion, HeapBudget, MidpVersion, ProfileContract, VmContext};
 
@@ -31,5 +30,24 @@ fn restore_rejects_heap_exceeding_destination_budget_atomically() {
         restored.status(),
         before,
         "a rejected restore must not change the VM state"
+    );
+}
+
+#[test]
+fn class_admission_rejects_operand_stack_underflow() {
+    let mut malformed = include_bytes!("fixtures/compiled/MinimalClass.class").to_vec();
+    // Replace answer()I's "bipush 42; ireturn" with
+    // "iadd; nop; ireturn". The operand stack starts empty,
+    // but iadd requires two integers. All instruction lengths remain valid.
+    let offset = malformed
+        .windows(3)
+        .position(|window| window == [0x10, 0x2a, 0xac])
+        .expect("known fixture contains the expected answer method");
+    malformed[offset..offset + 3].copy_from_slice(&[0x60, 0x00, 0xac]);
+
+    let mut vm = VmContext::new(ProfileContract::cldc11_midp20_large());
+    assert!(
+        vm.load_class(&malformed).is_err(),
+        "the VM must reject an operand-stack-underflow method at admission"
     );
 }
