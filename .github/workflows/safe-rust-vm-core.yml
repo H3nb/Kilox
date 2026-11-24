@@ -27,8 +27,21 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt
           rustup default stable
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Run Rustfmt and capture output
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p audit-logs
+          rustc -Vv > audit-logs/toolchain.txt
+          cargo fmt --all -- --check 2>&1 | tee audit-logs/format.log
+      - name: Preserve Rustfmt log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: safe-vm-log-format
+          path: audit-logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   clippy:
     name: Clippy
@@ -40,8 +53,21 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component clippy
           rustup default stable
-      - name: Check compiler lints
-        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Run Clippy and capture output
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p audit-logs
+          rustc -Vv > audit-logs/toolchain.txt
+          cargo clippy --locked --all-targets -- -D warnings 2>&1 | tee audit-logs/clippy.log
+      - name: Preserve Clippy log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: safe-vm-log-clippy
+          path: audit-logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   tests-debug:
     name: Debug tests
@@ -53,8 +79,21 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - name: Test debug build
-        run: cargo test --locked --all-targets
+      - name: Run Debug tests and capture output
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p audit-logs
+          rustc -Vv > audit-logs/toolchain.txt
+          cargo test --locked --all-targets 2>&1 | tee audit-logs/tests-debug.log
+      - name: Preserve Debug tests log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: safe-vm-log-tests-debug
+          path: audit-logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   tests-release:
     name: Release tests
@@ -66,5 +105,97 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - name: Test optimized build
-        run: cargo test --locked --release --all-targets
+      - name: Run Release tests and capture output
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p audit-logs
+          rustc -Vv > audit-logs/toolchain.txt
+          cargo test --locked --release --all-targets 2>&1 | tee audit-logs/tests-release.log
+      - name: Preserve Release tests log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: safe-vm-log-tests-release
+          path: audit-logs/
+          if-no-files-found: warn
+          retention-days: 30
+
+  feedback:
+    name: Downloadable audit feedback
+    if: ${{ always() }}
+    needs: [format, clippy, tests-debug, tests-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Collect check logs
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: safe-vm-log-*
+          path: reports/logs/
+      - name: Summarize findings and test results
+        if: ${{ always() }}
+        shell: bash
+        env:
+          FORMAT_RESULT: ${{ needs.format.result }}
+          CLIPPY_RESULT: ${{ needs.clippy.result }}
+          DEBUG_RESULT: ${{ needs['tests-debug'].result }}
+          RELEASE_RESULT: ${{ needs['tests-release'].result }}
+        run: |
+          mkdir -p reports
+          {
+            cat <<'HEADER'
+          # Kilox Safe Rust VM Core - independent audit feedback
+
+          This archive contains CI output for the *unmerged experimental candidate*. It is not evidence of Java ME conformance or a release approval.
+
+          ## Reproduction context
+          HEADER
+            printf '\n- Repository: %s\n- Branch/ref: %s\n- Tested commit: %s\n- CI run: https://github.com/%s/actions/runs/%s\n' "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            cat <<'STATUS'
+
+          ## Check results
+
+          | Check | CI status | Command |
+          | --- | --- | --- |
+          STATUS
+            printf '| Rustfmt | %s | `cargo fmt --all -- --check` |\n' "$FORMAT_RESULT"
+            printf '| Clippy | %s | `cargo clippy --locked --all-targets -- -D warnings` |\n' "$CLIPPY_RESULT"
+            printf '| Debug tests | %s | `cargo test --locked --all-targets` |\n' "$DEBUG_RESULT"
+            printf '| Release tests | %s | `cargo test --locked --release --all-targets` |\n' "$RELEASE_RESULT"
+            cat <<'DETAILS'
+
+          The CI statuses above are taken from the four independent jobs. See `logs/safe-vm-log-*/` for their captured stdout/stderr and exact Rust toolchain version. A missing log is not a passing check.
+
+          ## Reproduced correctness failures
+
+          1. **Snapshot budget bypass** — `restore_rejects_heap_exceeding_destination_budget_atomically` in `tests/vm_core_audit_tests.rs`. A snapshot with 257 heap objects from the large profile is accepted when restored into a compact-profile VM whose limit is 256. Restore must validate the destination profile's resource limits before mutating VM state.
+          2. **Invalid bytecode accepted at class admission** — `class_admission_rejects_operand_stack_underflow` in `tests/vm_core_audit_tests.rs`. A mutated original Java fixture places `iadd` at an empty operand stack; `VmContext::load_class` accepts it. The verifier must reject structurally valid but semantically invalid bytecode.
+
+          Both tests deliberately assert correct behavior and must remain present when fixing the implementation. A failing audit test is evidence of an unresolved defect, not a test to disable.
+
+          ## Other gaps to evaluate
+
+          - Snapshot tests run within a single OS process; different-process restore remains unproven.
+          - Parsing/structural StackMap checks are not proof of comprehensive CLDC bytecode verification.
+          - The presence of CLDC/MIDP profile declarations is not evidence of a fully functioning MIDlet runtime.
+          - Rustfmt/Clippy failures are quality findings distinct from the two correctness bugs above.
+
+          ## Requested follow-up
+
+          Correct the root causes, preserve VM state and hostile-input invariants, add focused regression coverage as needed, and rerun all four commands. Report the exact tested SHA and any remaining limitations. Do not replace the negative tests with tests asserting the existing incorrect behavior.
+
+          Provenance: original candidate and audit regression tests are in this branch. The archive contains text CI logs only; it does not contain private Java SDKs, game binaries or other proprietary corpora.
+          DETAILS
+          } > reports/README.md
+          printf 'rustfmt=%s\nclippy=%s\ndebug_tests=%s\nrelease_tests=%s\nsha=%s\n' "$FORMAT_RESULT" "$CLIPPY_RESULT" "$DEBUG_RESULT" "$RELEASE_RESULT" "$GITHUB_SHA" > reports/check-results.txt
+          cat reports/README.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload consolidated feedback ZIP
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kilox-safe-vm-core-feedback
+          path: reports/
+          if-no-files-found: error
+          retention-days: 30
