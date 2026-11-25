@@ -51,3 +51,22 @@ fn class_admission_rejects_operand_stack_underflow() {
         "the VM must reject an operand-stack-underflow method at admission"
     );
 }
+
+#[test]
+fn class_admission_rejects_primitive_value_returned_as_reference() {
+    let mut malformed = include_bytes!("fixtures/compiled/MinimalClass.class").to_vec();
+    // The fixture's answer()I pushes an integer and returns it with ireturn.
+    // Replacing ireturn with areturn preserves stack depth but violates both
+    // the operand type and the declared method return type.
+    let offset = malformed
+        .windows(3)
+        .position(|window| window == [0x10, 0x2a, 0xac])
+        .expect("known fixture contains bipush 42; ireturn");
+    malformed[offset + 2] = 0xb0;
+
+    let mut vm = VmContext::new(ProfileContract::cldc11_midp20_large());
+    assert!(
+        vm.load_class(&malformed).is_err(),
+        "class admission must reject areturn of an integer in an ()I method"
+    );
+}
