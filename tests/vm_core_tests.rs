@@ -32,7 +32,14 @@ fn executes_original_kilox_fixtures_through_vm_core() {
     let mut vm_nested = VmContext::new(ProfileContract::cldc11_midp20_large());
     vm_nested.load_class(NESTED).unwrap();
     let tid2 = vm_nested
-        .spawn_static("main", 5, "NestedStaticCalls", "evaluate", "(I)I", &[Value::Int(4)])
+        .spawn_static(
+            "main",
+            5,
+            "NestedStaticCalls",
+            "evaluate",
+            "(I)I",
+            &[Value::Int(4)],
+        )
         .unwrap();
     let out2 = vm_nested.run(2_000).unwrap();
     assert!(matches!(
@@ -49,21 +56,39 @@ fn enforces_cldc10_vs_cldc11_edition_contracts() {
     let p10 = ProfileContract::cldc10_midp10_compact();
     let p11 = ProfileContract::cldc11_midp21_large();
 
-    assert_eq!(p10.system_property("microedition.configuration"), Some("CLDC-1.0"));
-    assert_eq!(p10.system_property("microedition.profiles"), Some("MIDP-1.0"));
+    assert_eq!(
+        p10.system_property("microedition.configuration"),
+        Some("CLDC-1.0")
+    );
+    assert_eq!(
+        p10.system_property("microedition.profiles"),
+        Some("MIDP-1.0")
+    );
     assert!(!p10.cldc.allows_floating_point());
     assert!(!p10.cldc.allows_weak_references());
 
-    assert_eq!(p11.system_property("microedition.configuration"), Some("CLDC-1.1"));
-    assert_eq!(p11.system_property("microedition.profiles"), Some("MIDP-2.1"));
+    assert_eq!(
+        p11.system_property("microedition.configuration"),
+        Some("CLDC-1.1")
+    );
+    assert_eq!(
+        p11.system_property("microedition.profiles"),
+        Some("MIDP-2.1")
+    );
     assert!(p11.cldc.allows_floating_point());
     assert!(p11.cldc.allows_weak_references());
 
     let vm10 = VmContext::new(p10);
-    assert!(vm10.loader.find_class("java/lang/ref/WeakReference").is_none());
+    assert!(vm10
+        .loader
+        .find_class("java/lang/ref/WeakReference")
+        .is_none());
 
     let vm11 = VmContext::new(p11);
-    assert!(vm11.loader.find_class("java/lang/ref/WeakReference").is_some());
+    assert!(vm11
+        .loader
+        .find_class("java/lang/ref/WeakReference")
+        .is_some());
 }
 
 #[test]
@@ -77,7 +102,8 @@ fn parses_legacy_cldc_stack_map_and_rejects_float_in_cldc10() {
     assert_eq!(frames_11[0].locals, vec![VerificationType::Integer]);
     assert_eq!(frames_11[0].stack, vec![VerificationType::Float]);
 
-    let err_10 = parse_legacy_stack_map(raw, &ProfileContract::cldc10_midp10_compact()).unwrap_err();
+    let err_10 =
+        parse_legacy_stack_map(raw, &ProfileContract::cldc10_midp10_compact()).unwrap_err();
     assert!(matches!(err_10.kind, VerifyErrorKind::InvalidStackMap(_)));
 }
 
@@ -108,7 +134,11 @@ fn heap_gc_reclaims_unreachable_and_clears_weak_references() {
 
 #[test]
 fn checkpoint_and_atomic_restore_reproduces_identical_continuation() {
-    let profile = ProfileContract::new(CldcVersion::Cldc11, MidpVersion::Midp20, HeapBudget::compact());
+    let profile = ProfileContract::new(
+        CldcVersion::Cldc11,
+        MidpVersion::Midp20,
+        HeapBudget::compact(),
+    );
 
     let mut vm_a = VmContext::new(profile);
     vm_a.load_class(BRANCH_LOOP).unwrap();
@@ -116,7 +146,14 @@ fn checkpoint_and_atomic_restore_reproduces_identical_continuation() {
     vm_a.load_class(RECURSIVE).unwrap();
 
     let tid = vm_a
-        .spawn_static("worker", 5, "BranchLoop", "evaluate", "(I)I", &[Value::Int(6)])
+        .spawn_static(
+            "worker",
+            5,
+            "BranchLoop",
+            "evaluate",
+            "(I)I",
+            &[Value::Int(6)],
+        )
         .unwrap();
 
     // Advance partway, then capture a checkpoint at a global safepoint.
@@ -181,4 +218,51 @@ fn monitor_reentrancy_and_wait_notify_semantics() {
     vm.scheduler.monitor_exit(t2, lock).unwrap();
     // t1 should now be runnable again.
     assert!(vm.scheduler.select_runnable().is_some());
+}
+
+#[test]
+fn restore_rejects_snapshot_exceeding_destination_heap_budget_atomically() {
+    let mut large_vm = VmContext::new(ProfileContract::cldc11_midp20_large());
+    let obj_cls = large_vm.loader.well_known().object;
+    for _ in 0..257 {
+        large_vm
+            .heap
+            .alloc_instance(obj_cls, Vec::new(), false)
+            .unwrap();
+    }
+    let snap = large_vm.checkpoint();
+
+    let mut compact_vm = VmContext::new(ProfileContract::new(
+        CldcVersion::Cldc11,
+        MidpVersion::Midp20,
+        HeapBudget::compact(),
+    ));
+    let before = compact_vm.status();
+    let err = compact_vm.restore(&snap).unwrap_err();
+    assert!(matches!(
+        err,
+        VmError::Snapshot(SnapshotError::BudgetExceeded(_))
+    ));
+    assert_eq!(compact_vm.status(), before);
+}
+
+#[test]
+fn class_admission_rejects_operand_stack_underflow_at_load() {
+    let mut mutated = MINIMAL.to_vec();
+    let code_pos = mutated
+        .windows(3)
+        .position(|w| w == [0x10, 0x2a, 0xac])
+        .expect("MinimalClass bipush 42; ireturn");
+    // Replace `bipush 42; ireturn` with `nop; iadd; ireturn` (underflow on empty stack).
+    mutated[code_pos] = 0x00;
+    mutated[code_pos + 1] = 0x60;
+    mutated[code_pos + 2] = 0xac;
+
+    let mut vm = VmContext::new(ProfileContract::cldc11_midp20_large());
+    let err = vm.load_class(&mutated).unwrap_err();
+    assert!(matches!(
+        err,
+        VmError::Loader(j2me_vm::vm::LoaderError::Verify(v))
+            if v.kind == VerifyErrorKind::StackUnderflow
+    ));
 }

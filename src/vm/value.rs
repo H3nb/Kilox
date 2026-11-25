@@ -297,8 +297,8 @@ fn parse_field_at(
             if end == start || end >= bytes.len() {
                 return Err(DescriptorError::InvalidSyntax);
             }
-            let name =
-                std::str::from_utf8(&bytes[start..end]).map_err(|_| DescriptorError::InvalidSyntax)?;
+            let name = std::str::from_utf8(&bytes[start..end])
+                .map_err(|_| DescriptorError::InvalidSyntax)?;
             Ok((FieldType::Object(name.to_string()), end + 1))
         }
         b'[' => {

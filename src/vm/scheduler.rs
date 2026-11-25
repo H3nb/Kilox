@@ -438,7 +438,11 @@ impl Scheduler {
                 }
             }
         }
-        if self.monitors.get(&handle).is_some_and(MonitorState::is_idle) {
+        if self
+            .monitors
+            .get(&handle)
+            .is_some_and(MonitorState::is_idle)
+        {
             self.monitors.remove(&handle);
         }
         Ok(())

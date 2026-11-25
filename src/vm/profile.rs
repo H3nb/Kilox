@@ -147,11 +147,19 @@ impl ProfileContract {
     }
 
     pub const fn cldc11_midp20_large() -> Self {
-        Self::new(CldcVersion::Cldc11, MidpVersion::Midp20, HeapBudget::large())
+        Self::new(
+            CldcVersion::Cldc11,
+            MidpVersion::Midp20,
+            HeapBudget::large(),
+        )
     }
 
     pub const fn cldc11_midp21_large() -> Self {
-        Self::new(CldcVersion::Cldc11, MidpVersion::Midp21, HeapBudget::large())
+        Self::new(
+            CldcVersion::Cldc11,
+            MidpVersion::Midp21,
+            HeapBudget::large(),
+        )
     }
 
     pub const fn cldc10_midp10_compact() -> Self {

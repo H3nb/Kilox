@@ -2,14 +2,14 @@
 //! Bounded, explicit, versioned VM snapshot encoder and atomic validator/restorer.
 //!
 //! Never performs raw binary dumps of Rust memory layouts. Every field uses
-//! little-endian explicit framing, integrity verification, and compatibility
-//! checks BEFORE mutating any active `VmContext` state.
+//! little-endian explicit framing, integrity verification, destination budget
+//! enforcement, and compatibility checks BEFORE mutating any active `VmContext`.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 
 use super::heap::{ArrayStorage, GcStats, Heap, HeapEntry, HeapPayload};
 use super::loader::{fnv1a64, ClassInitState};
-use super::profile::{CldcVersion, MidpVersion};
+use super::profile::{CldcVersion, HeapBudget, MidpVersion};
 use super::scheduler::{Frame, MonitorState, Scheduler, ThreadState, VirtualThread};
 use super::value::{ClassId, Handle, Slot, ThreadId, Value};
 use super::VmContext;
@@ -28,6 +28,7 @@ pub enum SnapshotError {
     ChecksumMismatch,
     ProfileMismatch,
     CodeHashMismatch,
+    BudgetExceeded(&'static str),
     Malformed(&'static str),
 }
 
@@ -123,7 +124,8 @@ pub fn encode_snapshot(vm: &VmContext) -> Vec<u8> {
 }
 
 /// Atomically validates and stages a snapshot before mutating `vm`.
-/// If any check fails, `vm` remains completely unchanged.
+/// Rejects snapshots that violate integrity, profile, code-hash, or destination
+/// `HeapBudget` limits without modifying `vm`.
 pub fn restore_snapshot(vm: &mut VmContext, data: &[u8]) -> Result<(), SnapshotError> {
     if data.len() > MAX_SNAPSHOT_BYTES {
         return Err(SnapshotError::InputTooLarge);
@@ -169,6 +171,7 @@ pub fn restore_snapshot(vm: &mut VmContext, data: &[u8]) -> Result<(), SnapshotE
     }
     let snapshot_epoch = r.u64()?;
     let next_host_request_id = r.u64()?;
+    let budget = vm.profile.budget;
 
     // Stage 1: Class states & statics.
     let class_count = r.u32()? as usize;
@@ -197,10 +200,10 @@ pub fn restore_snapshot(vm: &mut VmContext, data: &[u8]) -> Result<(), SnapshotE
         staged_classes.push((init_state, statics));
     }
 
-    // Stage 2: Heap.
+    // Stage 2: Heap with strict destination budget enforcement.
     let slot_count = r.u32()? as usize;
-    if slot_count > vm.profile.budget.max_objects.saturating_mul(4).max(4096) {
-        return Err(SnapshotError::Malformed("heap slot count exceeds bound"));
+    if slot_count > budget.max_objects.saturating_mul(4).max(4096) {
+        return Err(SnapshotError::BudgetExceeded("heap slot table"));
     }
     let next_identity_hash = r.u32()?;
     let stats = GcStats {
@@ -208,7 +211,7 @@ pub fn restore_snapshot(vm: &mut VmContext, data: &[u8]) -> Result<(), SnapshotE
         reclaimed_objects: r.u64()?,
         cleared_weak_refs: r.u64()?,
     };
-    let mut staged_heap = Heap::new(vm.profile.budget);
+    let mut staged_heap = Heap::new(budget);
     staged_heap.next_identity_hash = next_identity_hash;
     staged_heap.stats = stats;
 
@@ -222,22 +225,51 @@ pub fn restore_snapshot(vm: &mut VmContext, data: &[u8]) -> Result<(), SnapshotE
                 staged_heap.free_list.push(idx as u32);
             }
             1 => {
+                if staged_heap.live_objects >= budget.max_objects {
+                    return Err(SnapshotError::BudgetExceeded("max_objects"));
+                }
                 let entry_gen = r.u32()?;
                 let class_id = ClassId(r.u32()?);
                 if (class_id.0 as usize) >= class_count {
                     return Err(SnapshotError::Malformed("heap class_id out of bounds"));
                 }
                 let identity_hash = r.i32()?;
-                let payload = decode_payload(&mut r)?;
+                let payload = decode_payload(
+                    &mut r,
+                    budget,
+                    staged_heap.live_field_slots,
+                    staged_heap.live_array_bytes,
+                )?;
                 match &payload {
                     HeapPayload::Instance { fields, .. } => {
-                        staged_heap.live_field_slots += fields.len();
+                        let next_fields = staged_heap
+                            .live_field_slots
+                            .checked_add(fields.len())
+                            .ok_or(SnapshotError::BudgetExceeded("max_field_slots"))?;
+                        if next_fields > budget.max_field_slots {
+                            return Err(SnapshotError::BudgetExceeded("max_field_slots"));
+                        }
+                        staged_heap.live_field_slots = next_fields;
                     }
                     HeapPayload::Array(storage) => {
-                        staged_heap.live_array_bytes += storage.byte_footprint();
+                        let next_bytes = staged_heap
+                            .live_array_bytes
+                            .checked_add(storage.byte_footprint())
+                            .ok_or(SnapshotError::BudgetExceeded("max_array_bytes"))?;
+                        if next_bytes > budget.max_array_bytes {
+                            return Err(SnapshotError::BudgetExceeded("max_array_bytes"));
+                        }
+                        staged_heap.live_array_bytes = next_bytes;
                     }
                     HeapPayload::StringObject { chars } => {
-                        staged_heap.live_array_bytes += chars.len().saturating_mul(2);
+                        let next_bytes = staged_heap
+                            .live_array_bytes
+                            .checked_add(chars.len().saturating_mul(2))
+                            .ok_or(SnapshotError::BudgetExceeded("max_array_bytes"))?;
+                        if next_bytes > budget.max_array_bytes {
+                            return Err(SnapshotError::BudgetExceeded("max_array_bytes"));
+                        }
+                        staged_heap.live_array_bytes = next_bytes;
                     }
                 }
                 staged_heap.live_objects += 1;
@@ -252,8 +284,14 @@ pub fn restore_snapshot(vm: &mut VmContext, data: &[u8]) -> Result<(), SnapshotE
         }
     }
     let intern_count = r.u32()? as usize;
+    if intern_count > budget.max_objects {
+        return Err(SnapshotError::BudgetExceeded("interned_strings"));
+    }
     for _ in 0..intern_count {
         let len = r.u32()? as usize;
+        if len.saturating_mul(2) > budget.max_array_bytes {
+            return Err(SnapshotError::BudgetExceeded("max_array_bytes"));
+        }
         let mut chars = Vec::with_capacity(len.min(4096));
         for _ in 0..len {
             chars.push(r.u16()?);
@@ -262,35 +300,54 @@ pub fn restore_snapshot(vm: &mut VmContext, data: &[u8]) -> Result<(), SnapshotE
         staged_heap.interned_strings.insert(chars, handle);
     }
 
-    // Stage 3: Scheduler.
-    let mut staged_sched = Scheduler::new(
-        vm.profile.budget.max_threads,
-        vm.profile.budget.instruction_quantum,
-    );
+    // Stage 3: Scheduler with thread and frame-depth budget enforcement.
+    let mut staged_sched = Scheduler::new(budget.max_threads, budget.instruction_quantum);
     staged_sched.next_thread_id = r.u32()?;
     staged_sched.virtual_time_ms = r.u64()?;
     staged_sched.total_instructions = r.u64()?;
     staged_sched.active_thread = decode_opt_u32(&mut r)?.map(ThreadId);
     let rq_len = r.u32()? as usize;
+    if rq_len > budget.max_threads.saturating_mul(4).max(64) {
+        return Err(SnapshotError::BudgetExceeded("run_queue"));
+    }
     for _ in 0..rq_len {
         staged_sched.run_queue.push_back(ThreadId(r.u32()?));
     }
     let thread_count = r.u32()? as usize;
+    if thread_count > budget.max_threads.saturating_mul(4).max(64) {
+        return Err(SnapshotError::BudgetExceeded("max_threads"));
+    }
+    let mut live_threads = 0usize;
     for _ in 0..thread_count {
-        let t = decode_thread(&mut r)?;
+        let t = decode_thread(&mut r, budget.max_frames_per_thread)?;
+        if t.state != ThreadState::Terminated {
+            live_threads += 1;
+            if live_threads > budget.max_threads {
+                return Err(SnapshotError::BudgetExceeded("max_threads"));
+            }
+        }
         staged_sched.threads.insert(t.id, t);
     }
     let mon_count = r.u32()? as usize;
+    if mon_count > budget.max_objects {
+        return Err(SnapshotError::BudgetExceeded("monitors"));
+    }
     for _ in 0..mon_count {
         let handle = decode_handle(&mut r)?;
         let owner = decode_opt_u32(&mut r)?.map(ThreadId);
         let recursion = r.u32()?;
         let eq_len = r.u32()? as usize;
+        if eq_len > budget.max_threads {
+            return Err(SnapshotError::BudgetExceeded("monitor_entry_queue"));
+        }
         let mut entry_queue = VecDeque::with_capacity(eq_len.min(64));
         for _ in 0..eq_len {
             entry_queue.push_back(ThreadId(r.u32()?));
         }
         let wq_len = r.u32()? as usize;
+        if wq_len > budget.max_threads {
+            return Err(SnapshotError::BudgetExceeded("monitor_wait_queue"));
+        }
         let mut wait_queue = VecDeque::with_capacity(wq_len.min(64));
         for _ in 0..wq_len {
             wait_queue.push_back(ThreadId(r.u32()?));
@@ -543,10 +600,39 @@ fn encode_payload(buf: &mut Vec<u8>, payload: &HeapPayload) {
     }
 }
 
-fn decode_payload(r: &mut Reader<'_>) -> Result<HeapPayload, SnapshotError> {
+fn check_array_bytes(
+    budget: HeapBudget,
+    live_array_bytes: usize,
+    len: usize,
+    elem_size: usize,
+) -> Result<(), SnapshotError> {
+    let bytes = len
+        .checked_mul(elem_size)
+        .ok_or(SnapshotError::BudgetExceeded("max_array_bytes"))?;
+    let next = live_array_bytes
+        .checked_add(bytes)
+        .ok_or(SnapshotError::BudgetExceeded("max_array_bytes"))?;
+    if next > budget.max_array_bytes {
+        return Err(SnapshotError::BudgetExceeded("max_array_bytes"));
+    }
+    Ok(())
+}
+
+fn decode_payload(
+    r: &mut Reader<'_>,
+    budget: HeapBudget,
+    live_field_slots: usize,
+    live_array_bytes: usize,
+) -> Result<HeapPayload, SnapshotError> {
     match r.u8()? {
         1 => {
             let len = r.u32()? as usize;
+            let next_fields = live_field_slots
+                .checked_add(len)
+                .ok_or(SnapshotError::BudgetExceeded("max_field_slots"))?;
+            if next_fields > budget.max_field_slots {
+                return Err(SnapshotError::BudgetExceeded("max_field_slots"));
+            }
             let mut fields = Vec::with_capacity(len.min(256));
             for _ in 0..len {
                 fields.push(decode_value(r)?);
@@ -566,14 +652,17 @@ fn decode_payload(r: &mut Reader<'_>) -> Result<HeapPayload, SnapshotError> {
             let storage = match kind {
                 1 => {
                     let len = r.u32()? as usize;
+                    check_array_bytes(budget, live_array_bytes, len, 1)?;
                     ArrayStorage::Boolean(r.take_slice(len)?.to_vec())
                 }
                 2 => {
                     let len = r.u32()? as usize;
+                    check_array_bytes(budget, live_array_bytes, len, 1)?;
                     ArrayStorage::Byte(r.take_slice(len)?.iter().map(|&b| b as i8).collect())
                 }
                 3 => {
                     let len = r.u32()? as usize;
+                    check_array_bytes(budget, live_array_bytes, len, 2)?;
                     let mut v = Vec::with_capacity(len.min(4096));
                     for _ in 0..len {
                         v.push(r.u16()?);
@@ -582,6 +671,7 @@ fn decode_payload(r: &mut Reader<'_>) -> Result<HeapPayload, SnapshotError> {
                 }
                 4 => {
                     let len = r.u32()? as usize;
+                    check_array_bytes(budget, live_array_bytes, len, 2)?;
                     let mut v = Vec::with_capacity(len.min(4096));
                     for _ in 0..len {
                         v.push(r.u16()? as i16);
@@ -590,6 +680,7 @@ fn decode_payload(r: &mut Reader<'_>) -> Result<HeapPayload, SnapshotError> {
                 }
                 5 => {
                     let len = r.u32()? as usize;
+                    check_array_bytes(budget, live_array_bytes, len, 4)?;
                     let mut v = Vec::with_capacity(len.min(4096));
                     for _ in 0..len {
                         v.push(r.i32()?);
@@ -598,6 +689,7 @@ fn decode_payload(r: &mut Reader<'_>) -> Result<HeapPayload, SnapshotError> {
                 }
                 6 => {
                     let len = r.u32()? as usize;
+                    check_array_bytes(budget, live_array_bytes, len, 8)?;
                     let mut v = Vec::with_capacity(len.min(4096));
                     for _ in 0..len {
                         v.push(r.i64()?);
@@ -606,6 +698,7 @@ fn decode_payload(r: &mut Reader<'_>) -> Result<HeapPayload, SnapshotError> {
                 }
                 7 => {
                     let len = r.u32()? as usize;
+                    check_array_bytes(budget, live_array_bytes, len, 4)?;
                     let mut v = Vec::with_capacity(len.min(4096));
                     for _ in 0..len {
                         v.push(r.u32()?);
@@ -614,6 +707,7 @@ fn decode_payload(r: &mut Reader<'_>) -> Result<HeapPayload, SnapshotError> {
                 }
                 8 => {
                     let len = r.u32()? as usize;
+                    check_array_bytes(budget, live_array_bytes, len, 8)?;
                     let mut v = Vec::with_capacity(len.min(4096));
                     for _ in 0..len {
                         v.push(r.u64()?);
@@ -623,6 +717,7 @@ fn decode_payload(r: &mut Reader<'_>) -> Result<HeapPayload, SnapshotError> {
                 9 => {
                     let element_class = ClassId(r.u32()?);
                     let len = r.u32()? as usize;
+                    check_array_bytes(budget, live_array_bytes, len, 8)?;
                     let mut elements = Vec::with_capacity(len.min(4096));
                     for _ in 0..len {
                         elements.push(decode_opt_handle(r)?);
@@ -638,6 +733,7 @@ fn decode_payload(r: &mut Reader<'_>) -> Result<HeapPayload, SnapshotError> {
         }
         3 => {
             let len = r.u32()? as usize;
+            check_array_bytes(budget, live_array_bytes, len, 2)?;
             let mut chars = Vec::with_capacity(len.min(4096));
             for _ in 0..len {
                 chars.push(r.u16()?);
@@ -715,9 +811,15 @@ fn encode_thread(buf: &mut Vec<u8>, t: &VirtualThread) {
     }
 }
 
-fn decode_thread(r: &mut Reader<'_>) -> Result<VirtualThread, SnapshotError> {
+fn decode_thread(
+    r: &mut Reader<'_>,
+    max_frames_per_thread: usize,
+) -> Result<VirtualThread, SnapshotError> {
     let id = ThreadId(r.u32()?);
     let name_len = r.u32()? as usize;
+    if name_len > 1024 {
+        return Err(SnapshotError::Malformed("thread name too long"));
+    }
     let name = std::str::from_utf8(r.take_slice(name_len)?)
         .map_err(|_| SnapshotError::Malformed("invalid thread name utf8"))?
         .to_string();
@@ -758,6 +860,9 @@ fn decode_thread(r: &mut Reader<'_>) -> Result<VirtualThread, SnapshotError> {
     };
     let quantum_remaining = r.u32()?;
     let frame_count = r.u32()? as usize;
+    if frame_count > max_frames_per_thread {
+        return Err(SnapshotError::BudgetExceeded("max_frames_per_thread"));
+    }
     let mut frames = Vec::with_capacity(frame_count.min(128));
     for _ in 0..frame_count {
         let class_id = ClassId(r.u32()?);
@@ -766,11 +871,17 @@ fn decode_thread(r: &mut Reader<'_>) -> Result<VirtualThread, SnapshotError> {
         let pc = r.u16()?;
         let synchronized_monitor = decode_opt_handle(r)?;
         let locals_len = r.u32()? as usize;
+        if locals_len > 65_535 {
+            return Err(SnapshotError::Malformed("frame locals exceed u16"));
+        }
         let mut locals = Vec::with_capacity(locals_len.min(128));
         for _ in 0..locals_len {
             locals.push(decode_slot(r)?);
         }
         let stack_len = r.u32()? as usize;
+        if stack_len > 65_535 {
+            return Err(SnapshotError::Malformed("frame stack exceeds u16"));
+        }
         let mut stack = Vec::with_capacity(stack_len.min(128));
         for _ in 0..stack_len {
             stack.push(decode_slot(r)?);

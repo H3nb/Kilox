@@ -186,7 +186,9 @@ pub(crate) fn step_thread(vm: &mut VmContext, tid: ThreadId) -> Result<VmStep, V
         | Op::CAStore
         | Op::SAStore => {
             let val = match op {
-                Op::IAStore | Op::BAStore | Op::CAStore | Op::SAStore => Value::Int(pop_int(vm, tid)?),
+                Op::IAStore | Op::BAStore | Op::CAStore | Op::SAStore => {
+                    Value::Int(pop_int(vm, tid)?)
+                }
                 Op::LAStore => Value::Long(pop_long(vm, tid)?),
                 Op::FAStore => Value::Float(pop_float(vm, tid)?),
                 Op::DAStore => Value::Double(pop_double(vm, tid)?),
@@ -324,7 +326,11 @@ pub(crate) fn step_thread(vm: &mut VmContext, tid: ThreadId) -> Result<VmStep, V
             let b = pop_int(vm, tid)?;
             let a = pop_int(vm, tid)?;
             if b == 0 {
-                return raise_builtin_exception(vm, tid, vm.loader.well_known().arithmetic_exception);
+                return raise_builtin_exception(
+                    vm,
+                    tid,
+                    vm.loader.well_known().arithmetic_exception,
+                );
             }
             push_val(vm, tid, Value::Int(a.wrapping_div(b)))?;
         }
@@ -332,7 +338,11 @@ pub(crate) fn step_thread(vm: &mut VmContext, tid: ThreadId) -> Result<VmStep, V
             let b = pop_int(vm, tid)?;
             let a = pop_int(vm, tid)?;
             if b == 0 {
-                return raise_builtin_exception(vm, tid, vm.loader.well_known().arithmetic_exception);
+                return raise_builtin_exception(
+                    vm,
+                    tid,
+                    vm.loader.well_known().arithmetic_exception,
+                );
             }
             push_val(vm, tid, Value::Int(a.wrapping_rem(b)))?;
         }
@@ -406,7 +416,11 @@ pub(crate) fn step_thread(vm: &mut VmContext, tid: ThreadId) -> Result<VmStep, V
             let b = pop_long(vm, tid)?;
             let a = pop_long(vm, tid)?;
             if b == 0 {
-                return raise_builtin_exception(vm, tid, vm.loader.well_known().arithmetic_exception);
+                return raise_builtin_exception(
+                    vm,
+                    tid,
+                    vm.loader.well_known().arithmetic_exception,
+                );
             }
             push_val(vm, tid, Value::Long(a.wrapping_div(b)))?;
         }
@@ -414,7 +428,11 @@ pub(crate) fn step_thread(vm: &mut VmContext, tid: ThreadId) -> Result<VmStep, V
             let b = pop_long(vm, tid)?;
             let a = pop_long(vm, tid)?;
             if b == 0 {
-                return raise_builtin_exception(vm, tid, vm.loader.well_known().arithmetic_exception);
+                return raise_builtin_exception(
+                    vm,
+                    tid,
+                    vm.loader.well_known().arithmetic_exception,
+                );
             }
             push_val(vm, tid, Value::Long(a.wrapping_rem(b)))?;
         }
@@ -594,7 +612,11 @@ pub(crate) fn step_thread(vm: &mut VmContext, tid: ThreadId) -> Result<VmStep, V
             let b = f32::from_bits(pop_float(vm, tid)?);
             let a = f32::from_bits(pop_float(vm, tid)?);
             let res = if a.is_nan() || b.is_nan() {
-                if matches!(op, Op::FCmpG) { 1 } else { -1 }
+                if matches!(op, Op::FCmpG) {
+                    1
+                } else {
+                    -1
+                }
             } else if a > b {
                 1
             } else if a < b {
@@ -608,7 +630,11 @@ pub(crate) fn step_thread(vm: &mut VmContext, tid: ThreadId) -> Result<VmStep, V
             let b = f64::from_bits(pop_double(vm, tid)?);
             let a = f64::from_bits(pop_double(vm, tid)?);
             let res = if a.is_nan() || b.is_nan() {
-                if matches!(op, Op::DCmpG) { 1 } else { -1 }
+                if matches!(op, Op::DCmpG) {
+                    1
+                } else {
+                    -1
+                }
             } else if a > b {
                 1
             } else if a < b {
@@ -720,7 +746,8 @@ pub(crate) fn step_thread(vm: &mut VmContext, tid: ThreadId) -> Result<VmStep, V
                     pc: current_pc,
                 });
             }
-            let Some((owner_cls, slot)) = vm.loader.resolve_static_field(target_cls, &fname, &fdesc)
+            let Some((owner_cls, slot)) =
+                vm.loader.resolve_static_field(target_cls, &fname, &fdesc)
             else {
                 return Err(VmError::Loader(LoaderError::NoSuchField {
                     class: cls_name,
@@ -747,7 +774,8 @@ pub(crate) fn step_thread(vm: &mut VmContext, tid: ThreadId) -> Result<VmStep, V
                 });
             }
             let val = pop_val(vm, tid)?;
-            let Some((owner_cls, slot)) = vm.loader.resolve_static_field(target_cls, &fname, &fdesc)
+            let Some((owner_cls, slot)) =
+                vm.loader.resolve_static_field(target_cls, &fname, &fdesc)
             else {
                 return Err(VmError::Loader(LoaderError::NoSuchField {
                     class: cls_name,
@@ -822,7 +850,11 @@ pub(crate) fn step_thread(vm: &mut VmContext, tid: ThreadId) -> Result<VmStep, V
                     vm.collect_garbage();
                     match vm.heap.alloc_instance(
                         target_cls,
-                        vm.loader.class(target_cls).unwrap().instance_field_defaults.clone(),
+                        vm.loader
+                            .class(target_cls)
+                            .unwrap()
+                            .instance_field_defaults
+                            .clone(),
                         is_weak,
                     ) {
                         Ok(h) => push_val(vm, tid, Value::Ref(Some(h)))?,
@@ -1085,7 +1117,10 @@ pub(crate) fn step_thread(vm: &mut VmContext, tid: ThreadId) -> Result<VmStep, V
             });
         }
 
-        Op::InvokeVirtual(cp_idx) | Op::InvokeInterface { cp_index: cp_idx, .. } => {
+        Op::InvokeVirtual(cp_idx)
+        | Op::InvokeInterface {
+            cp_index: cp_idx, ..
+        } => {
             let (cls_name, mname, mdesc) = cp_methodref(vm, class_id, cp_idx)?;
             if handle_builtin_virtual(vm, tid, &cls_name, &mname, &mdesc)? {
                 advance_ip(vm, tid, next_ip, instr_len)?;
@@ -1208,10 +1243,9 @@ fn invoke_method(
             .methods
             .get(method_idx)
             .ok_or(VmError::InternalState("missing target method"))?;
-        let code = method
-            .code
-            .as_ref()
-            .ok_or(VmError::InternalState("cannot invoke abstract/native method without binding"))?;
+        let code = method.code.as_ref().ok_or(VmError::InternalState(
+            "cannot invoke abstract/native method without binding",
+        ))?;
         (
             code.max_locals as usize,
             code.max_stack as usize,
@@ -1253,7 +1287,7 @@ fn invoke_method(
         frame.set_local_value(local_slot, Value::Ref(Some(r)));
         local_slot += 1;
     }
-    for (param_ty, val) in params.iter().zip(args.into_iter()) {
+    for (param_ty, val) in params.iter().zip(args) {
         frame.set_local_value(local_slot, val);
         local_slot += if param_ty.is_category2() { 2 } else { 1 };
     }
@@ -1382,9 +1416,9 @@ fn unwind_exception(
                             } else if let Some(CpEntry::Class(cname)) =
                                 cls.constant_pool.get(h.catch_type as usize)
                             {
-                                vm.loader
-                                    .find_class(cname)
-                                    .is_some_and(|catch_cls| vm.loader.is_assignable_to(exc_class, catch_cls))
+                                vm.loader.find_class(cname).is_some_and(|catch_cls| {
+                                    vm.loader.is_assignable_to(exc_class, catch_cls)
+                                })
                             } else {
                                 false
                             };
@@ -1462,10 +1496,7 @@ fn handle_builtin_special(
         let _ = pop_ref(vm, tid)?;
         return Ok(true);
     }
-    if cls == "java/lang/ref/WeakReference"
-        && name == "<init>"
-        && desc == "(Ljava/lang/Object;)V"
-    {
+    if cls == "java/lang/ref/WeakReference" && name == "<init>" && desc == "(Ljava/lang/Object;)V" {
         let referent = pop_ref(vm, tid)?;
         let Some(weak_obj) = pop_ref(vm, tid)? else {
             return Err(VmError::Heap(HeapError::NullPointer));
@@ -1562,7 +1593,11 @@ fn cp_class(vm: &VmContext, cid: ClassId, idx: u16) -> Result<String, VmError> {
     }
 }
 
-fn cp_fieldref(vm: &VmContext, cid: ClassId, idx: u16) -> Result<(String, String, String), VmError> {
+fn cp_fieldref(
+    vm: &VmContext,
+    cid: ClassId,
+    idx: u16,
+) -> Result<(String, String, String), VmError> {
     match cp_entry(vm, cid, idx)? {
         CpEntry::Fieldref {
             class,
@@ -1664,7 +1699,11 @@ fn peek_ref(vm: &VmContext, tid: ThreadId) -> Result<Option<Handle>, VmError> {
     }
 }
 
-fn peek_receiver(vm: &VmContext, tid: ThreadId, arg_slots: usize) -> Result<Option<Handle>, VmError> {
+fn peek_receiver(
+    vm: &VmContext,
+    tid: ThreadId,
+    arg_slots: usize,
+) -> Result<Option<Handle>, VmError> {
     let stack = &vm
         .scheduler
         .thread(tid)

@@ -114,7 +114,10 @@ impl VmContext {
     pub fn new(profile: ProfileContract) -> Self {
         let loader = ClassLoader::new(&profile);
         let heap = Heap::new(profile.budget);
-        let scheduler = Scheduler::new(profile.budget.max_threads, profile.budget.instruction_quantum);
+        let scheduler = Scheduler::new(
+            profile.budget.max_threads,
+            profile.budget.instruction_quantum,
+        );
         Self {
             profile,
             loader,
@@ -211,7 +214,9 @@ impl VmContext {
             frame.set_local_value(slot, val);
             slot += if ty.is_category2() { 2 } else { 1 };
         }
-        Ok(self.scheduler.spawn(thread_name.to_string(), priority, frame)?)
+        Ok(self
+            .scheduler
+            .spawn(thread_name.to_string(), priority, frame)?)
     }
 
     /// Executes one guest bytecode instruction on the next scheduled virtual thread.
@@ -277,7 +282,9 @@ impl VmContext {
                 self.scheduler.run_queue.push_back(tid);
                 Ok(())
             }
-            _ => Err(VmError::InternalState("thread not waiting for this host request")),
+            _ => Err(VmError::InternalState(
+                "thread not waiting for this host request",
+            )),
         }
     }
 

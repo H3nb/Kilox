@@ -27,13 +27,23 @@ pub const ACC_NATIVE: u16 = 0x0100;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoaderError {
     ClassFormat(ParseError),
-    UnsupportedClassVersion { major: u16, minor: u16 },
+    UnsupportedClassVersion {
+        major: u16,
+        minor: u16,
+    },
     Verify(VerifyError),
     InvalidDescriptor(String),
     FloatingPointForbiddenInCldc10(String),
     NoClassDefFound(String),
-    NoSuchMethod { class: String, name: String, descriptor: String },
-    NoSuchField { class: String, name: String },
+    NoSuchMethod {
+        class: String,
+        name: String,
+        descriptor: String,
+    },
+    NoSuchField {
+        class: String,
+        name: String,
+    },
     IncompatibleClassChange(&'static str),
     Heap(HeapError),
 }
@@ -231,8 +241,12 @@ impl ClassLoader {
         };
 
         let object = loader.register_bootstrap_class("java/lang/Object", None, ACC_PUBLIC, false);
-        let string =
-            loader.register_bootstrap_class("java/lang/String", Some(object), ACC_PUBLIC | ACC_FINAL, false);
+        let string = loader.register_bootstrap_class(
+            "java/lang/String",
+            Some(object),
+            ACC_PUBLIC | ACC_FINAL,
+            false,
+        );
         let throwable =
             loader.register_bootstrap_class("java/lang/Throwable", Some(object), ACC_PUBLIC, false);
         let exception = loader.register_bootstrap_class(
@@ -391,7 +405,8 @@ impl ClassLoader {
         is_weak_reference: bool,
     ) -> ClassId {
         let id = ClassId(self.classes.len() as u32);
-        let super_name = super_id.and_then(|sid| self.classes.get(sid.0 as usize).map(|c| c.name.clone()));
+        let super_name =
+            super_id.and_then(|sid| self.classes.get(sid.0 as usize).map(|c| c.name.clone()));
         let class = LoadedClass {
             id,
             name: name.to_string(),
@@ -452,7 +467,9 @@ impl ClassLoader {
                 _ => return Err(LoaderError::IncompatibleClassChange("invalid super_class")),
             }
         };
-        let super_id = super_name.as_deref().and_then(|sn| self.by_name.get(sn).copied());
+        let super_id = super_name
+            .as_deref()
+            .and_then(|sn| self.by_name.get(sn).copied());
 
         let mut interfaces = Vec::with_capacity(cf.interfaces.len());
         for &iface_idx in &cf.interfaces {
@@ -693,7 +710,9 @@ impl ClassLoader {
 fn cp_utf8(cp: &[CpEntry], idx: u16) -> Result<String, LoaderError> {
     match cp.get(idx as usize) {
         Some(CpEntry::Utf8(s)) => Ok(s.clone()),
-        _ => Err(LoaderError::IncompatibleClassChange("expected Utf8 constant")),
+        _ => Err(LoaderError::IncompatibleClassChange(
+            "expected Utf8 constant",
+        )),
     }
 }
 
@@ -718,7 +737,9 @@ fn resolve_constant_pool(cf: &ClassFile<'_>) -> Result<Vec<CpEntry>, LoaderError
                 name_index,
                 descriptor_index,
             }) => Ok((utf8_at(*name_index)?, utf8_at(*descriptor_index)?)),
-            _ => Err(LoaderError::IncompatibleClassChange("bad NameAndType index")),
+            _ => Err(LoaderError::IncompatibleClassChange(
+                "bad NameAndType index",
+            )),
         }
     };
 
@@ -799,9 +820,7 @@ fn decode_modified_utf8(bytes: &[u8]) -> String {
             let b1 = bytes[i + 1];
             let b2 = bytes[i + 2];
             units.push(
-                (u16::from(b0 & 0x0f) << 12)
-                    | (u16::from(b1 & 0x3f) << 6)
-                    | u16::from(b2 & 0x3f),
+                (u16::from(b0 & 0x0f) << 12) | (u16::from(b1 & 0x3f) << 6) | u16::from(b2 & 0x3f),
             );
             i += 3;
         } else {

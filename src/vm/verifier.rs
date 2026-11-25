@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! CLDC 1.0/1.1 bytecode decoder and legacy `StackMap` verifier.
+//! CLDC 1.0/1.1 bytecode decoder, legacy `StackMap` parser, and abstract
+//! operand-stack / control-flow verifier.
 //!
 //! Decodes JVMS 2nd Edition / CLDC opcodes into validated VM instructions,
 //! parses legacy CLDC `StackMap` attributes (distinct from Java SE 6
 //! `StackMapTable`), enforces `ProfileContract` edition rules (such as
-//! forbidding floating-point opcodes in CLDC 1.0), and validates branch,
-//! switch, and exception-handler boundaries.
+//! forbidding floating-point opcodes in CLDC 1.0), validates branch, switch,
+//! and exception-handler boundaries, and verifies operand-stack depth,
+//! underflow/overflow, merge consistency, and fallthrough safety at class
+//! admission.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
-use crate::classfile::{ClassFile, Code, ExceptionHandler};
+use crate::classfile::{ClassFile, Code, Constant, ExceptionHandler};
 
 use super::profile::ProfileContract;
+use super::value::{parse_field_descriptor, parse_method_descriptor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyErrorKind {
@@ -26,6 +30,11 @@ pub enum VerifyErrorKind {
     InvalidSwitchTable,
     LocalOutOfBounds(u16),
     CodeTooLarge,
+    InvalidConstantPoolRef(u16),
+    StackUnderflow,
+    StackOverflow,
+    InconsistentStackJoin,
+    FallthroughOffEnd,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,11 +63,30 @@ pub enum VerificationType {
     Uninitialized { offset: u16 },
 }
 
+impl VerificationType {
+    const fn slot_width(self) -> usize {
+        match self {
+            Self::Long | Self::Double => 2,
+            _ => 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackMapFrame {
     pub offset: u16,
     pub locals: Vec<VerificationType>,
     pub stack: Vec<VerificationType>,
+}
+
+impl StackMapFrame {
+    fn locals_slots(&self) -> usize {
+        self.locals.iter().map(|t| t.slot_width()).sum()
+    }
+
+    fn stack_slots(&self) -> usize {
+        self.stack.iter().map(|t| t.slot_width()).sum()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +187,10 @@ pub enum Op {
     LOr,
     IXor,
     LXor,
-    IInc { index: u16, delta: i16 },
+    IInc {
+        index: u16,
+        delta: i16,
+    },
 
     I2L,
     I2F,
@@ -217,7 +248,10 @@ pub enum Op {
     InvokeVirtual(u16),
     InvokeSpecial(u16),
     InvokeStatic(u16),
-    InvokeInterface { cp_index: u16, count: u8 },
+    InvokeInterface {
+        cp_index: u16,
+        count: u8,
+    },
 
     New(u16),
     NewArray(u8),
@@ -228,7 +262,10 @@ pub enum Op {
     InstanceOf(u16),
     MonitorEnter,
     MonitorExit,
-    MultiANewArray { cp_index: u16, dimensions: u8 },
+    MultiANewArray {
+        cp_index: u16,
+        dimensions: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -292,8 +329,9 @@ fn read_vtype_list(
     pos: &mut usize,
     profile: &ProfileContract,
 ) -> Result<Vec<VerificationType>, VerifyError> {
-    let n = read_u16(bytes, pos)
-        .ok_or_else(|| VerifyError::new(*pos, VerifyErrorKind::InvalidStackMap("truncated list")))?;
+    let n = read_u16(bytes, pos).ok_or_else(|| {
+        VerifyError::new(*pos, VerifyErrorKind::InvalidStackMap("truncated list"))
+    })?;
     let mut out = Vec::with_capacity((n as usize).min(64));
     for _ in 0..n {
         let tag = read_u8(bytes, pos).ok_or_else(|| {
@@ -402,14 +440,24 @@ pub fn decode_and_verify(
         return Err(VerifyError::new(0, VerifyErrorKind::MissingRequiredStackMap));
     }
 
-    // Validate legacy StackMap target offsets land on exact instruction boundaries.
+    // Validate legacy StackMap target offsets and declared slot bounds.
+    let mut stack_map_by_ip: BTreeMap<usize, usize> = BTreeMap::new();
     for frame in &stack_map {
-        if !pc_to_ip.contains_key(&frame.offset) {
+        let Some(&ip) = pc_to_ip.get(&frame.offset) else {
             return Err(VerifyError::new(
                 frame.offset as usize,
                 VerifyErrorKind::InvalidStackMap("frame offset not on instruction boundary"),
             ));
+        };
+        if frame.locals_slots() > usize::from(code.max_locals)
+            || frame.stack_slots() > usize::from(code.max_stack)
+        {
+            return Err(VerifyError::new(
+                frame.offset as usize,
+                VerifyErrorKind::InvalidStackMap("frame exceeds max_locals or max_stack"),
+            ));
         }
+        stack_map_by_ip.insert(ip, frame.stack_slots());
     }
 
     // Pass 2: Resolve branch & switch bytecode offsets to instruction indices.
@@ -425,6 +473,15 @@ pub fn decode_and_verify(
         exceptions.push(verify_exception_handler(h, bytes.len(), &pc_to_ip)?);
     }
 
+    // Pass 3: Abstract operand-stack depth & control-flow verification.
+    verify_stack_and_control_flow(
+        class,
+        &instructions,
+        &exceptions,
+        &stack_map_by_ip,
+        usize::from(code.max_stack),
+    )?;
+
     Ok(DecodedMethod {
         max_stack: code.max_stack,
         max_locals: code.max_locals,
@@ -432,6 +489,428 @@ pub fn decode_and_verify(
         exceptions,
         stack_map,
     })
+}
+
+/// Abstract worklist verifier ensuring operand-stack underflow, overflow,
+/// merge-depth mismatches, invalid constant-pool refs, and fallthrough off end
+/// are rejected at class admission.
+fn verify_stack_and_control_flow(
+    class: &ClassFile<'_>,
+    instructions: &[DecodedInstruction],
+    exceptions: &[VerifiedExceptionHandler],
+    stack_map_by_ip: &BTreeMap<usize, usize>,
+    max_stack: usize,
+) -> Result<(), VerifyError> {
+    let mut known_depth: Vec<Option<usize>> = vec![None; instructions.len()];
+    let mut worklist: VecDeque<usize> = VecDeque::new();
+
+    if !instructions.is_empty() {
+        known_depth[0] = Some(0);
+        worklist.push_back(0);
+    }
+    for h in exceptions {
+        if 1 > max_stack {
+            return Err(VerifyError::new(
+                h.handler_pc as usize,
+                VerifyErrorKind::StackOverflow,
+            ));
+        }
+        enqueue_depth(
+            h.handler_ip,
+            h.handler_pc as usize,
+            1,
+            &mut known_depth,
+            &mut worklist,
+        )?;
+    }
+
+    while let Some(ip) = worklist.pop_front() {
+        let instr = &instructions[ip];
+        let pc = instr.pc as usize;
+        let depth = known_depth[ip].expect("worklist entry has depth");
+
+        if let Some(&declared_stack) = stack_map_by_ip.get(&ip) {
+            if declared_stack != depth {
+                return Err(VerifyError::new(pc, VerifyErrorKind::InconsistentStackJoin));
+            }
+        }
+
+        let effect = instruction_stack_effect(class, pc, &instr.op)?;
+        if depth < effect.min_pop {
+            return Err(VerifyError::new(pc, VerifyErrorKind::StackUnderflow));
+        }
+        let next_depth_signed = (depth as isize) + effect.delta;
+        if next_depth_signed < 0 {
+            return Err(VerifyError::new(pc, VerifyErrorKind::StackUnderflow));
+        }
+        let next_depth = next_depth_signed as usize;
+        if next_depth > max_stack {
+            return Err(VerifyError::new(pc, VerifyErrorKind::StackOverflow));
+        }
+
+        for target in effect.targets {
+            enqueue_depth(target, pc, next_depth, &mut known_depth, &mut worklist)?;
+        }
+
+        if effect.falls_through {
+            let next_ip = ip + 1;
+            if next_ip >= instructions.len() {
+                return Err(VerifyError::new(pc, VerifyErrorKind::FallthroughOffEnd));
+            }
+            enqueue_depth(next_ip, pc, next_depth, &mut known_depth, &mut worklist)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn enqueue_depth(
+    target_ip: usize,
+    source_pc: usize,
+    depth: usize,
+    known_depth: &mut [Option<usize>],
+    worklist: &mut VecDeque<usize>,
+) -> Result<(), VerifyError> {
+    match known_depth[target_ip] {
+        None => {
+            known_depth[target_ip] = Some(depth);
+            worklist.push_back(target_ip);
+            Ok(())
+        }
+        Some(existing) if existing == depth => Ok(()),
+        Some(_) => Err(VerifyError::new(
+            source_pc,
+            VerifyErrorKind::InconsistentStackJoin,
+        )),
+    }
+}
+
+struct StackEffect {
+    min_pop: usize,
+    delta: isize,
+    falls_through: bool,
+    targets: Vec<usize>,
+}
+
+impl StackEffect {
+    fn linear(min_pop: usize, delta: isize) -> Self {
+        Self {
+            min_pop,
+            delta,
+            falls_through: true,
+            targets: Vec::new(),
+        }
+    }
+
+    fn terminal(min_pop: usize, delta: isize) -> Self {
+        Self {
+            min_pop,
+            delta,
+            falls_through: false,
+            targets: Vec::new(),
+        }
+    }
+
+    fn branch(min_pop: usize, delta: isize, target: usize, falls_through: bool) -> Self {
+        Self {
+            min_pop,
+            delta,
+            falls_through,
+            targets: vec![target],
+        }
+    }
+}
+
+fn instruction_stack_effect(
+    class: &ClassFile<'_>,
+    pc: usize,
+    op: &Op,
+) -> Result<StackEffect, VerifyError> {
+    Ok(match op {
+        Op::Nop | Op::IInc { .. } => StackEffect::linear(0, 0),
+        Op::AConstNull
+        | Op::IConst(_)
+        | Op::FConst(_)
+        | Op::ILoad(_)
+        | Op::FLoad(_)
+        | Op::ALoad(_) => StackEffect::linear(0, 1),
+        Op::LConst(_) | Op::DConst(_) | Op::LLoad(_) | Op::DLoad(_) => StackEffect::linear(0, 2),
+
+        Op::Ldc(cp_idx) => {
+            match class.constant_pool.get(*cp_idx as usize) {
+                Some(Constant::Integer(_) | Constant::Float(_) | Constant::String { .. }) => {}
+                _ => {
+                    return Err(VerifyError::new(
+                        pc,
+                        VerifyErrorKind::InvalidConstantPoolRef(*cp_idx),
+                    ));
+                }
+            }
+            StackEffect::linear(0, 1)
+        }
+        Op::Ldc2W(cp_idx) => {
+            match class.constant_pool.get(*cp_idx as usize) {
+                Some(Constant::Long(_) | Constant::Double(_)) => {}
+                _ => {
+                    return Err(VerifyError::new(
+                        pc,
+                        VerifyErrorKind::InvalidConstantPoolRef(*cp_idx),
+                    ));
+                }
+            }
+            StackEffect::linear(0, 2)
+        }
+
+        Op::IALoad | Op::FALoad | Op::AALoad | Op::BALoad | Op::CALoad | Op::SALoad => {
+            StackEffect::linear(2, -1)
+        }
+        Op::LALoad | Op::DALoad => StackEffect::linear(2, 0),
+
+        Op::IStore(_) | Op::FStore(_) | Op::AStore(_) => StackEffect::linear(1, -1),
+        Op::LStore(_) | Op::DStore(_) => StackEffect::linear(2, -2),
+
+        Op::IAStore | Op::FAStore | Op::AAStore | Op::BAStore | Op::CAStore | Op::SAStore => {
+            StackEffect::linear(3, -3)
+        }
+        Op::LAStore | Op::DAStore => StackEffect::linear(4, -4),
+
+        Op::Pop => StackEffect::linear(1, -1),
+        Op::Pop2 => StackEffect::linear(2, -2),
+        Op::Dup => StackEffect::linear(1, 1),
+        Op::DupX1 => StackEffect::linear(2, 1),
+        Op::DupX2 => StackEffect::linear(3, 1),
+        Op::Dup2 => StackEffect::linear(2, 2),
+        Op::Dup2X1 => StackEffect::linear(3, 2),
+        Op::Dup2X2 => StackEffect::linear(4, 2),
+        Op::Swap => StackEffect::linear(2, 0),
+
+        Op::IAdd
+        | Op::ISub
+        | Op::IMul
+        | Op::IDiv
+        | Op::IRem
+        | Op::IShl
+        | Op::IShr
+        | Op::IUShr
+        | Op::IAnd
+        | Op::IOr
+        | Op::IXor
+        | Op::FAdd
+        | Op::FSub
+        | Op::FMul
+        | Op::FDiv
+        | Op::FRem
+        | Op::FCmpL
+        | Op::FCmpG => StackEffect::linear(2, -1),
+
+        Op::LAdd
+        | Op::LSub
+        | Op::LMul
+        | Op::LDiv
+        | Op::LRem
+        | Op::LAnd
+        | Op::LOr
+        | Op::LXor
+        | Op::DAdd
+        | Op::DSub
+        | Op::DMul
+        | Op::DDiv
+        | Op::DRem => StackEffect::linear(4, -2),
+
+        Op::LShl | Op::LShr | Op::LUShr => StackEffect::linear(3, -1),
+        Op::LCmp | Op::DCmpL | Op::DCmpG => StackEffect::linear(4, -3),
+
+        Op::INeg
+        | Op::FNeg
+        | Op::I2F
+        | Op::F2I
+        | Op::I2B
+        | Op::I2C
+        | Op::I2S
+        | Op::ArrayLength
+        | Op::NewArray(_) => StackEffect::linear(1, 0),
+        Op::LNeg | Op::DNeg | Op::L2D | Op::D2L => StackEffect::linear(2, 0),
+        Op::I2L | Op::I2D | Op::F2L | Op::F2D => StackEffect::linear(1, 1),
+        Op::L2I | Op::L2F | Op::D2I | Op::D2F => StackEffect::linear(2, -1),
+
+        Op::IfZero(_, t) | Op::IfNull(t) | Op::IfNonNull(t) => StackEffect::branch(1, -1, *t, true),
+        Op::IfICmp(_, t) | Op::IfACmpEq(t) | Op::IfACmpNe(t) => {
+            StackEffect::branch(2, -2, *t, true)
+        }
+        Op::Goto(t) => StackEffect::branch(0, 0, *t, false),
+        Op::TableSwitch {
+            default_ip,
+            targets,
+            ..
+        } => {
+            let mut all = Vec::with_capacity(targets.len() + 1);
+            all.push(*default_ip);
+            all.extend_from_slice(targets);
+            StackEffect {
+                min_pop: 1,
+                delta: -1,
+                falls_through: false,
+                targets: all,
+            }
+        }
+        Op::LookupSwitch { default_ip, pairs } => {
+            let mut all = Vec::with_capacity(pairs.len() + 1);
+            all.push(*default_ip);
+            for &(_, t) in pairs {
+                all.push(t);
+            }
+            StackEffect {
+                min_pop: 1,
+                delta: -1,
+                falls_through: false,
+                targets: all,
+            }
+        }
+
+        Op::IReturn | Op::FReturn | Op::AReturn | Op::AThrow => StackEffect::terminal(1, -1),
+        Op::LReturn | Op::DReturn => StackEffect::terminal(2, -2),
+        Op::Return => StackEffect::terminal(0, 0),
+
+        Op::GetStatic(cp_idx) => {
+            let slots = cp_field_slots(class, pc, *cp_idx)?;
+            StackEffect::linear(0, slots as isize)
+        }
+        Op::PutStatic(cp_idx) => {
+            let slots = cp_field_slots(class, pc, *cp_idx)?;
+            StackEffect::linear(slots, -(slots as isize))
+        }
+        Op::GetField(cp_idx) => {
+            let slots = cp_field_slots(class, pc, *cp_idx)?;
+            StackEffect::linear(1, (slots as isize) - 1)
+        }
+        Op::PutField(cp_idx) => {
+            let slots = cp_field_slots(class, pc, *cp_idx)?;
+            StackEffect::linear(1 + slots, -((1 + slots) as isize))
+        }
+
+        Op::InvokeStatic(cp_idx) => {
+            let (param_slots, ret_slots) = cp_method_slots(class, pc, *cp_idx, false)?;
+            StackEffect::linear(param_slots, (ret_slots as isize) - (param_slots as isize))
+        }
+        Op::InvokeVirtual(cp_idx) | Op::InvokeSpecial(cp_idx) => {
+            let (param_slots, ret_slots) = cp_method_slots(class, pc, *cp_idx, false)?;
+            let pop = 1 + param_slots;
+            StackEffect::linear(pop, (ret_slots as isize) - (pop as isize))
+        }
+        Op::InvokeInterface { cp_index, .. } => {
+            let (param_slots, ret_slots) = cp_method_slots(class, pc, *cp_index, true)?;
+            let pop = 1 + param_slots;
+            StackEffect::linear(pop, (ret_slots as isize) - (pop as isize))
+        }
+
+        Op::New(cp_idx) => {
+            require_class_cp(class, pc, *cp_idx)?;
+            StackEffect::linear(0, 1)
+        }
+        Op::ANewArray(cp_idx) | Op::CheckCast(cp_idx) | Op::InstanceOf(cp_idx) => {
+            require_class_cp(class, pc, *cp_idx)?;
+            StackEffect::linear(1, 0)
+        }
+        Op::MultiANewArray {
+            cp_index,
+            dimensions,
+        } => {
+            require_class_cp(class, pc, *cp_index)?;
+            let dims = usize::from(*dimensions);
+            StackEffect::linear(dims, 1 - (dims as isize))
+        }
+        Op::MonitorEnter | Op::MonitorExit => StackEffect::linear(1, -1),
+    })
+}
+
+fn require_class_cp(class: &ClassFile<'_>, pc: usize, cp_idx: u16) -> Result<(), VerifyError> {
+    match class.constant_pool.get(cp_idx as usize) {
+        Some(Constant::Class { .. }) => Ok(()),
+        _ => Err(VerifyError::new(
+            pc,
+            VerifyErrorKind::InvalidConstantPoolRef(cp_idx),
+        )),
+    }
+}
+
+fn cp_field_slots(class: &ClassFile<'_>, pc: usize, cp_idx: u16) -> Result<usize, VerifyError> {
+    let nat_idx = match class.constant_pool.get(cp_idx as usize) {
+        Some(Constant::Fieldref {
+            name_and_type_index,
+            ..
+        }) => *name_and_type_index,
+        _ => {
+            return Err(VerifyError::new(
+                pc,
+                VerifyErrorKind::InvalidConstantPoolRef(cp_idx),
+            ));
+        }
+    };
+    let desc_idx = match class.constant_pool.get(nat_idx as usize) {
+        Some(Constant::NameAndType {
+            descriptor_index, ..
+        }) => *descriptor_index,
+        _ => {
+            return Err(VerifyError::new(
+                pc,
+                VerifyErrorKind::InvalidConstantPoolRef(cp_idx),
+            ));
+        }
+    };
+    let raw = class
+        .utf8_bytes(desc_idx)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .ok_or_else(|| VerifyError::new(pc, VerifyErrorKind::InvalidConstantPoolRef(cp_idx)))?;
+    let ty = parse_field_descriptor(raw)
+        .map_err(|_| VerifyError::new(pc, VerifyErrorKind::InvalidConstantPoolRef(cp_idx)))?;
+    Ok(if ty.is_category2() { 2 } else { 1 })
+}
+
+fn cp_method_slots(
+    class: &ClassFile<'_>,
+    pc: usize,
+    cp_idx: u16,
+    is_interface: bool,
+) -> Result<(usize, usize), VerifyError> {
+    let nat_idx = match class.constant_pool.get(cp_idx as usize) {
+        Some(Constant::Methodref {
+            name_and_type_index,
+            ..
+        }) if !is_interface => *name_and_type_index,
+        Some(Constant::InterfaceMethodref {
+            name_and_type_index,
+            ..
+        }) if is_interface => *name_and_type_index,
+        _ => {
+            return Err(VerifyError::new(
+                pc,
+                VerifyErrorKind::InvalidConstantPoolRef(cp_idx),
+            ));
+        }
+    };
+    let desc_idx = match class.constant_pool.get(nat_idx as usize) {
+        Some(Constant::NameAndType {
+            descriptor_index, ..
+        }) => *descriptor_index,
+        _ => {
+            return Err(VerifyError::new(
+                pc,
+                VerifyErrorKind::InvalidConstantPoolRef(cp_idx),
+            ));
+        }
+    };
+    let raw = class
+        .utf8_bytes(desc_idx)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .ok_or_else(|| VerifyError::new(pc, VerifyErrorKind::InvalidConstantPoolRef(cp_idx)))?;
+    let desc = parse_method_descriptor(raw)
+        .map_err(|_| VerifyError::new(pc, VerifyErrorKind::InvalidConstantPoolRef(cp_idx)))?;
+    let ret_slots = match desc.return_type {
+        None => 0,
+        Some(ref t) if t.is_category2() => 2,
+        Some(_) => 1,
+    };
+    Ok((desc.param_slot_count(), ret_slots))
 }
 
 fn verify_exception_handler(
@@ -510,7 +989,11 @@ impl RawOp {
     }
 }
 
-fn resolve_target(pc: u16, target: i32, pc_to_ip: &BTreeMap<u16, usize>) -> Result<usize, VerifyError> {
+fn resolve_target(
+    pc: u16,
+    target: i32,
+    pc_to_ip: &BTreeMap<u16, usize>,
+) -> Result<usize, VerifyError> {
     let target_u16 = u16::try_from(target)
         .map_err(|_| VerifyError::new(pc as usize, VerifyErrorKind::InvalidBranchTarget(target)))?;
     pc_to_ip
@@ -606,17 +1089,67 @@ fn decode_one(
         0x13 => Op::Ldc(read_u16(bytes, pos).ok_or_else(trunc)?),
         0x14 => Op::Ldc2W(read_u16(bytes, pos).ok_or_else(trunc)?),
 
-        0x15 => Op::ILoad(check_local(start_pc, u16::from(read_u8(bytes, pos).ok_or_else(trunc)?), 1, max_locals)?),
-        0x16 => Op::LLoad(check_local(start_pc, u16::from(read_u8(bytes, pos).ok_or_else(trunc)?), 2, max_locals)?),
-        0x17 => Op::FLoad(check_local(start_pc, u16::from(read_u8(bytes, pos).ok_or_else(trunc)?), 1, max_locals)?),
-        0x18 => Op::DLoad(check_local(start_pc, u16::from(read_u8(bytes, pos).ok_or_else(trunc)?), 2, max_locals)?),
-        0x19 => Op::ALoad(check_local(start_pc, u16::from(read_u8(bytes, pos).ok_or_else(trunc)?), 1, max_locals)?),
+        0x15 => Op::ILoad(check_local(
+            start_pc,
+            u16::from(read_u8(bytes, pos).ok_or_else(trunc)?),
+            1,
+            max_locals,
+        )?),
+        0x16 => Op::LLoad(check_local(
+            start_pc,
+            u16::from(read_u8(bytes, pos).ok_or_else(trunc)?),
+            2,
+            max_locals,
+        )?),
+        0x17 => Op::FLoad(check_local(
+            start_pc,
+            u16::from(read_u8(bytes, pos).ok_or_else(trunc)?),
+            1,
+            max_locals,
+        )?),
+        0x18 => Op::DLoad(check_local(
+            start_pc,
+            u16::from(read_u8(bytes, pos).ok_or_else(trunc)?),
+            2,
+            max_locals,
+        )?),
+        0x19 => Op::ALoad(check_local(
+            start_pc,
+            u16::from(read_u8(bytes, pos).ok_or_else(trunc)?),
+            1,
+            max_locals,
+        )?),
 
-        0x1a..=0x1d => Op::ILoad(check_local(start_pc, u16::from(opcode - 0x1a), 1, max_locals)?),
-        0x1e..=0x21 => Op::LLoad(check_local(start_pc, u16::from(opcode - 0x1e), 2, max_locals)?),
-        0x22..=0x25 => Op::FLoad(check_local(start_pc, u16::from(opcode - 0x22), 1, max_locals)?),
-        0x26..=0x29 => Op::DLoad(check_local(start_pc, u16::from(opcode - 0x26), 2, max_locals)?),
-        0x2a..=0x2d => Op::ALoad(check_local(start_pc, u16::from(opcode - 0x2a), 1, max_locals)?),
+        0x1a..=0x1d => Op::ILoad(check_local(
+            start_pc,
+            u16::from(opcode - 0x1a),
+            1,
+            max_locals,
+        )?),
+        0x1e..=0x21 => Op::LLoad(check_local(
+            start_pc,
+            u16::from(opcode - 0x1e),
+            2,
+            max_locals,
+        )?),
+        0x22..=0x25 => Op::FLoad(check_local(
+            start_pc,
+            u16::from(opcode - 0x22),
+            1,
+            max_locals,
+        )?),
+        0x26..=0x29 => Op::DLoad(check_local(
+            start_pc,
+            u16::from(opcode - 0x26),
+            2,
+            max_locals,
+        )?),
+        0x2a..=0x2d => Op::ALoad(check_local(
+            start_pc,
+            u16::from(opcode - 0x2a),
+            1,
+            max_locals,
+        )?),
 
         0x2e => Op::IALoad,
         0x2f => Op::LALoad,
@@ -627,17 +1160,67 @@ fn decode_one(
         0x34 => Op::CALoad,
         0x35 => Op::SALoad,
 
-        0x36 => Op::IStore(check_local(start_pc, u16::from(read_u8(bytes, pos).ok_or_else(trunc)?), 1, max_locals)?),
-        0x37 => Op::LStore(check_local(start_pc, u16::from(read_u8(bytes, pos).ok_or_else(trunc)?), 2, max_locals)?),
-        0x38 => Op::FStore(check_local(start_pc, u16::from(read_u8(bytes, pos).ok_or_else(trunc)?), 1, max_locals)?),
-        0x39 => Op::DStore(check_local(start_pc, u16::from(read_u8(bytes, pos).ok_or_else(trunc)?), 2, max_locals)?),
-        0x3a => Op::AStore(check_local(start_pc, u16::from(read_u8(bytes, pos).ok_or_else(trunc)?), 1, max_locals)?),
+        0x36 => Op::IStore(check_local(
+            start_pc,
+            u16::from(read_u8(bytes, pos).ok_or_else(trunc)?),
+            1,
+            max_locals,
+        )?),
+        0x37 => Op::LStore(check_local(
+            start_pc,
+            u16::from(read_u8(bytes, pos).ok_or_else(trunc)?),
+            2,
+            max_locals,
+        )?),
+        0x38 => Op::FStore(check_local(
+            start_pc,
+            u16::from(read_u8(bytes, pos).ok_or_else(trunc)?),
+            1,
+            max_locals,
+        )?),
+        0x39 => Op::DStore(check_local(
+            start_pc,
+            u16::from(read_u8(bytes, pos).ok_or_else(trunc)?),
+            2,
+            max_locals,
+        )?),
+        0x3a => Op::AStore(check_local(
+            start_pc,
+            u16::from(read_u8(bytes, pos).ok_or_else(trunc)?),
+            1,
+            max_locals,
+        )?),
 
-        0x3b..=0x3e => Op::IStore(check_local(start_pc, u16::from(opcode - 0x3b), 1, max_locals)?),
-        0x3f..=0x42 => Op::LStore(check_local(start_pc, u16::from(opcode - 0x3f), 2, max_locals)?),
-        0x43..=0x46 => Op::FStore(check_local(start_pc, u16::from(opcode - 0x43), 1, max_locals)?),
-        0x47..=0x4a => Op::DStore(check_local(start_pc, u16::from(opcode - 0x47), 2, max_locals)?),
-        0x4b..=0x4e => Op::AStore(check_local(start_pc, u16::from(opcode - 0x4b), 1, max_locals)?),
+        0x3b..=0x3e => Op::IStore(check_local(
+            start_pc,
+            u16::from(opcode - 0x3b),
+            1,
+            max_locals,
+        )?),
+        0x3f..=0x42 => Op::LStore(check_local(
+            start_pc,
+            u16::from(opcode - 0x3f),
+            2,
+            max_locals,
+        )?),
+        0x43..=0x46 => Op::FStore(check_local(
+            start_pc,
+            u16::from(opcode - 0x43),
+            1,
+            max_locals,
+        )?),
+        0x47..=0x4a => Op::DStore(check_local(
+            start_pc,
+            u16::from(opcode - 0x47),
+            2,
+            max_locals,
+        )?),
+        0x4b..=0x4e => Op::AStore(check_local(
+            start_pc,
+            u16::from(opcode - 0x4b),
+            1,
+            max_locals,
+        )?),
 
         0x4f => Op::IAStore,
         0x50 => Op::LAStore,
@@ -774,11 +1357,17 @@ fn decode_one(
             let low = read_i32(bytes, pos).ok_or_else(trunc)?;
             let high = read_i32(bytes, pos).ok_or_else(trunc)?;
             if low > high {
-                return Err(VerifyError::new(start_pc, VerifyErrorKind::InvalidSwitchTable));
+                return Err(VerifyError::new(
+                    start_pc,
+                    VerifyErrorKind::InvalidSwitchTable,
+                ));
             }
             let count = (i64::from(high) - i64::from(low) + 1) as usize;
             if count > 16_384 {
-                return Err(VerifyError::new(start_pc, VerifyErrorKind::InvalidSwitchTable));
+                return Err(VerifyError::new(
+                    start_pc,
+                    VerifyErrorKind::InvalidSwitchTable,
+                ));
             }
             let mut targets = Vec::with_capacity(count);
             for _ in 0..count {
@@ -801,7 +1390,10 @@ fn decode_one(
             let default_pc = base.wrapping_add(read_i32(bytes, pos).ok_or_else(trunc)?);
             let npairs = read_i32(bytes, pos).ok_or_else(trunc)?;
             if !(0..=16_384).contains(&npairs) {
-                return Err(VerifyError::new(start_pc, VerifyErrorKind::InvalidSwitchTable));
+                return Err(VerifyError::new(
+                    start_pc,
+                    VerifyErrorKind::InvalidSwitchTable,
+                ));
             }
             let mut pairs = Vec::with_capacity(npairs as usize);
             let mut prev_key: Option<i32> = None;
@@ -809,7 +1401,10 @@ fn decode_one(
                 let key = read_i32(bytes, pos).ok_or_else(trunc)?;
                 if let Some(prev) = prev_key {
                     if key <= prev {
-                        return Err(VerifyError::new(start_pc, VerifyErrorKind::InvalidSwitchTable));
+                        return Err(VerifyError::new(
+                            start_pc,
+                            VerifyErrorKind::InvalidSwitchTable,
+                        ));
                     }
                 }
                 prev_key = Some(key);
@@ -839,7 +1434,10 @@ fn decode_one(
             let count = read_u8(bytes, pos).ok_or_else(trunc)?;
             let zero = read_u8(bytes, pos).ok_or_else(trunc)?;
             if count == 0 || zero != 0 {
-                return Err(VerifyError::new(start_pc, VerifyErrorKind::TruncatedInstruction));
+                return Err(VerifyError::new(
+                    start_pc,
+                    VerifyErrorKind::TruncatedInstruction,
+                ));
             }
             Op::InvokeInterface { cp_index, count }
         }
@@ -881,14 +1479,22 @@ fn decode_one(
                         delta,
                     }
                 }
-                _ => return Err(VerifyError::new(start_pc, VerifyErrorKind::InvalidWideTarget(sub))),
+                _ => {
+                    return Err(VerifyError::new(
+                        start_pc,
+                        VerifyErrorKind::InvalidWideTarget(sub),
+                    ));
+                }
             }
         }
         0xc5 => {
             let cp_index = read_u16(bytes, pos).ok_or_else(trunc)?;
             let dimensions = read_u8(bytes, pos).ok_or_else(trunc)?;
             if dimensions == 0 {
-                return Err(VerifyError::new(start_pc, VerifyErrorKind::TruncatedInstruction));
+                return Err(VerifyError::new(
+                    start_pc,
+                    VerifyErrorKind::TruncatedInstruction,
+                ));
             }
             Op::MultiANewArray {
                 cp_index,
@@ -908,7 +1514,12 @@ fn decode_one(
             return Ok(RawOp::Goto(base.wrapping_add(rel)));
         }
 
-        _ => return Err(VerifyError::new(start_pc, VerifyErrorKind::UnsupportedOpcode(opcode))),
+        _ => {
+            return Err(VerifyError::new(
+                start_pc,
+                VerifyErrorKind::UnsupportedOpcode(opcode),
+            ));
+        }
     };
 
     Ok(RawOp::Direct(op))

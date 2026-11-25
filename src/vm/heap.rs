@@ -206,7 +206,11 @@ impl Heap {
         (x & 0x7fff_ffff) as i32
     }
 
-    fn insert_entry(&mut self, class_id: ClassId, payload: HeapPayload) -> Result<Handle, HeapError> {
+    fn insert_entry(
+        &mut self,
+        class_id: ClassId,
+        payload: HeapPayload,
+    ) -> Result<Handle, HeapError> {
         if self.live_objects >= self.budget.max_objects {
             return Err(HeapError::OutOfMemory);
         }
@@ -316,7 +320,11 @@ impl Heap {
         Ok(handle)
     }
 
-    pub fn intern_string(&mut self, string_class_id: ClassId, text: &str) -> Result<Handle, HeapError> {
+    pub fn intern_string(
+        &mut self,
+        string_class_id: ClassId,
+        text: &str,
+    ) -> Result<Handle, HeapError> {
         let chars: Vec<u16> = text.encode_utf16().collect();
         if let Some(&existing) = self.interned_strings.get(&chars) {
             if self.get(existing).is_ok() {
@@ -372,14 +380,20 @@ impl Heap {
 
     pub fn get_field(&self, handle: Handle, index: usize) -> Result<Value, HeapError> {
         match &self.get(handle)?.payload {
-            HeapPayload::Instance { fields, .. } => {
-                fields.get(index).copied().ok_or(HeapError::FieldOutOfBounds)
-            }
+            HeapPayload::Instance { fields, .. } => fields
+                .get(index)
+                .copied()
+                .ok_or(HeapError::FieldOutOfBounds),
             _ => Err(HeapError::NotAnObject),
         }
     }
 
-    pub fn put_field(&mut self, handle: Handle, index: usize, value: Value) -> Result<(), HeapError> {
+    pub fn put_field(
+        &mut self,
+        handle: Handle,
+        index: usize,
+        value: Value,
+    ) -> Result<(), HeapError> {
         match &mut self.get_mut(handle)?.payload {
             HeapPayload::Instance { fields, .. } => {
                 let slot = fields.get_mut(index).ok_or(HeapError::FieldOutOfBounds)?;
@@ -519,12 +533,14 @@ impl Heap {
                         self.live_field_slots = self.live_field_slots.saturating_sub(fields.len());
                     }
                     HeapPayload::Array(storage) => {
-                        self.live_array_bytes =
-                            self.live_array_bytes.saturating_sub(storage.byte_footprint());
+                        self.live_array_bytes = self
+                            .live_array_bytes
+                            .saturating_sub(storage.byte_footprint());
                     }
                     HeapPayload::StringObject { chars } => {
-                        self.live_array_bytes =
-                            self.live_array_bytes.saturating_sub(chars.len().saturating_mul(2));
+                        self.live_array_bytes = self
+                            .live_array_bytes
+                            .saturating_sub(chars.len().saturating_mul(2));
                     }
                 }
                 self.live_objects = self.live_objects.saturating_sub(1);
