@@ -168,19 +168,22 @@ jobs:
 
           The CI statuses above are taken from the four independent jobs. See `logs/safe-vm-log-*/` for their captured stdout/stderr and exact Rust toolchain version. A missing log is not a passing check.
 
-          ## Reproduced correctness failures
+          ## Independent correctness regressions
 
-          1. **Snapshot budget bypass** — `restore_rejects_heap_exceeding_destination_budget_atomically` in `tests/vm_core_audit_tests.rs`. A snapshot with 257 heap objects from the large profile is accepted when restored into a compact-profile VM whose limit is 256. Restore must validate the destination profile's resource limits before mutating VM state.
-          2. **Invalid bytecode accepted at class admission** — `class_admission_rejects_operand_stack_underflow` in `tests/vm_core_audit_tests.rs`. A mutated original Java fixture places `iadd` at an empty operand stack; `VmContext::load_class` accepts it. The verifier must reject structurally valid but semantically invalid bytecode.
+          These tests assert the required behavior; they are not assertions of known bugs:
+          
+          1. `restore_rejects_heap_exceeding_destination_budget_atomically`: reject a valid snapshot containing 257 objects when restoring into a VM whose destination budget permits 256, without mutating the target state.
+          2. `class_admission_rejects_operand_stack_underflow`: reject a method that executes `iadd` on an empty operand stack at class admission.
+          3. `class_admission_rejects_primitive_value_returned_as_reference`: reject `areturn` of a primitive integer inside a method declared to return `I`, even though operand-stack depth is valid.
 
-          Both tests deliberately assert correct behavior and must remain present when fixing the implementation. A failing audit test is evidence of an unresolved defect, not a test to disable.
+          See the per-test results below for the current run, rather than treating earlier findings as permanent failures. The two regressions from v1 are resolved in v2's baseline CI; the third tests whether v2 enforces operand and method return types.
 
           ## Other gaps to evaluate
 
           - Snapshot tests run within a single OS process; different-process restore remains unproven.
           - Parsing/structural StackMap checks are not proof of comprehensive CLDC bytecode verification.
           - The presence of CLDC/MIDP profile declarations is not evidence of a fully functioning MIDlet runtime.
-          - Rustfmt/Clippy failures are quality findings distinct from the two correctness bugs above.
+          - Rustfmt/Clippy findings are distinct from runtime and verifier correctness bugs.
 
           ## Requested follow-up
 
@@ -189,6 +192,29 @@ jobs:
           Provenance: original candidate and audit regression tests are in this branch. The archive contains text CI logs only; it does not contain private Java SDKs, game binaries or other proprietary corpora.
           DETAILS
           } > reports/README.md
+          {
+            printf '\n## Regression outcomes in this CI run\n\n'
+            printf '| Independent regression test | Debug | Release |\n| --- | --- | --- |\n'
+            for test_name in \
+              restore_rejects_heap_exceeding_destination_budget_atomically \
+              class_admission_rejects_operand_stack_underflow \
+              class_admission_rejects_primitive_value_returned_as_reference; do
+              results=()
+              for config in tests-debug tests-release; do
+                log_file="reports/logs/safe-vm-log-${config}/${config}.log"
+                if [[ ! -f "$log_file" ]]; then
+                  results+=("log missing")
+                elif grep -Fq "test ${test_name} ... ok" "$log_file"; then
+                  results+=("PASS")
+                elif grep -Fq "test ${test_name} ... FAILED" "$log_file"; then
+                  results+=("FAIL")
+                else
+                  results+=("not observed")
+                fi
+              done
+              printf '| `%s` | %s | %s |\n' "$test_name" "${results[0]}" "${results[1]}"
+            done
+          } >> reports/README.md
           printf 'rustfmt=%s\nclippy=%s\ndebug_tests=%s\nrelease_tests=%s\nsha=%s\n' "$FORMAT_RESULT" "$CLIPPY_RESULT" "$DEBUG_RESULT" "$RELEASE_RESULT" "$GITHUB_SHA" > reports/check-results.txt
           cat reports/README.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload consolidated feedback ZIP
