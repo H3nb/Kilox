@@ -310,6 +310,20 @@ active during the 240-tick probe. Production and diagnostic runs agreed
 on all 94 results. Two archives now run in this cohort and 92 still
 stop during preparation.
 
+Local runtime `aeb8710` implements the MIDP `Sprite(Sprite)` copy
+constructor and the CLDC 1.1 `Byte` wrapper. Original guest fixtures verify
+independent Sprite frame state, copied mutable image pixels, Byte range
+checks and parsing, and fresh-process recovery for both bindings.
+Formatting, strict all-target Clippy and 764 locked offline tests passed on
+Windows MSVC.
+
+In the 94-archive cohort, both archives that first needed the Sprite copy
+constructor now reach `RecordStore.enumerateRecords(...)`, the first unresolved
+call for 29 archives. The archive that first needed `Byte` now reaches
+`Object.wait()`. Production and diagnostic probes agree on every result.
+Two MIDlets reach `Active` and remain active through 240 ticks. The other 92
+archives stop during preparation.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
