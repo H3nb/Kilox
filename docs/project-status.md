@@ -388,6 +388,33 @@ The original fixture checks capacity, a retained surrogate, caught
 index faults and immutable String copies after fresh-process recovery.
 All eight focused StringBuffer tests and strict focused Clippy passed.
 
+Local runtime `21326c3` binds Sprite-to-Sprite collision, in bounds-only and
+pixel modes, and `defineCollisionRectangle`. The original fixture tests
+visibility, the eight transforms, frame selection and copying a custom
+rectangle across a fresh-process restore. Image and TiledLayer collision
+overloads remain open. Sprite programs select a new checkpoint profile
+because the object layout has changed. A real MIDlet that previously
+stopped at Sprite collision restored its initial scheduler checkpoint
+byte-for-byte in a fresh process with the Large heap profile.
+Formatting, strict all-target Clippy and 776 locked offline tests passed
+on Windows MSVC.
+
+Five additional archives reached `Active` with the Sprite and StringBuffer
+increments, bringing the same three-tick cohort to 48 of 94. Two still
+had `startApp()` pending at tick three. One showed a Canvas by tick 15 and
+remained active at tick 30. The other stopped on an image allocation limit
+at tick 9. A newly admitted Sprite MIDlet also hit an image allocation
+limit after its first visible frame.
+
+Local commits `9909754` and `752e385` add explicit `Error` and
+`NoClassDefFoundError` constructors and admit `Timer` construction in
+protected ranges. Separate focused suites verified retained error
+messages and traces, timer behavior and fresh-process restore.
+The one archive that progressed from Sprite collision to
+`NoClassDefFoundError(String)` and then to protected Timer construction
+reached `Active` in a targeted rerun, with `startApp()` still pending at
+tick three. The other 93 archives were not rerun at `752e385`.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
