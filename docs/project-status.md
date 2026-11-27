@@ -293,6 +293,23 @@ stop during preparation. `RecordStore.enumerateRecords(...)` (27) and
 `Canvas.serviceRepaints()` (21) remain the most frequent first unresolved
 calls.
 
+Local runtime `f500b9a` supports `Form(String, Item[])`. Its original
+MIDlet fixture checks initial item order and independence from later array
+writes, constructor faults without partial item ownership, and fresh-process
+recovery. Alert and List constants now take their fixed heap identities
+before standard streams are allocated. An Alert fixture verifies those
+constants alongside guest `System.err` across restore. Formatting, strict
+all-target Clippy and 763 locked offline tests passed on Windows MSVC.
+
+The archive that first stopped on the Form constructor now enters `Active`
+and shows a Form with one text field and two commands on its first tick.
+It stayed active through a 240-tick probe, accepted a text edit and command
+activation, and passed fresh-process checkpoint recovery and the
+pause/resume/destroy cycle. The previously verified Canvas also remained
+active during the 240-tick probe. Production and diagnostic runs agreed
+on all 94 results. Two archives now run in this cohort and 92 still
+stop during preparation.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
