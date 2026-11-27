@@ -471,6 +471,28 @@ with a Java keyword as its name. An experimental run accepting that name
 advanced three to `Active` at tick three, including one with `startApp()`
 still pending. The executable identifier policy remains unchanged.
 
+Local revision `82dcb72` binds the Nokia screen backlight request, checks
+the light ID and level, and retains the requested brightness in checkpoint
+state for the presentation host. Its original fixture checks invalid argument
+exceptions and fresh-process restore. All nine packages previously blocked
+at this binding progressed to a later preparation check. Eight reached a
+non-returning bytecode cycle, and one reached protected-constructor access.
+
+Local revision `0ea92ab` accepts in-bounds cyclic methods and keeps the
+fallthrough check. The same 94 archives yielded 61 `Active` states and 58
+completed `startApp()` calls at tick three. Nine additional MIDlets became
+active, including one whose cycle was already reachable before the
+backlight binding. All nine displayed Canvas output by tick 75 and were
+active at tick 120. The 84 other three-tick outcomes outside the ten
+changed archives matched the prior baseline.
+
+One of three targeted Canvas replays restored in a fresh process and matched
+60 ticks of frame hashes, input, pause, resume, destroy and final checkpoint
+bytes. The other two received `InvalidObjectGraph` when checkpointing the
+first visible frame. A private diagnostic located one rejection in the
+throwable trace root check. Formatting, strict all-target Clippy and 780
+locked Rust tests passed at `0ea92ab`.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
