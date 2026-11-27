@@ -276,6 +276,23 @@ and `Throwable.printStackTrace()` (6). A separate diagnostic identified
 an unavailable static method owner in ten other archives. Nine reference
 Nokia `DeviceControl` and one references CLDC `java.lang.Byte`.
 
+Local runtime `32979fb` prints `Throwable.printStackTrace()` to the
+guest `System.err` with the virtual description and the stored creation
+frames. Frame lines include the method's bytecode PC. Original fixtures
+verify fresh-process restore at the output boundaries and confirm that
+`System.out` stays separate. Formatting, strict all-target Clippy and
+763 locked offline tests passed on Windows MSVC.
+
+All seven archives with a first unresolved `printStackTrace()` call
+advanced. Four now need `Canvas.serviceRepaints()`, one needs
+`RecordStore.enumerateRecords(...)`, one needs `Object.wait()`, and one
+needs `Form(String, Item[])`. Production and diagnostic probes agreed on
+all 94 results. The same Canvas replayed 360 ticks and completed pause,
+resume and destroy after fresh-process restore. The remaining 93 archives
+stop during preparation. `RecordStore.enumerateRecords(...)` (27) and
+`Canvas.serviceRepaints()` (21) remain the most frequent first unresolved
+calls.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
