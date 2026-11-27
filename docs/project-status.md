@@ -351,9 +351,17 @@ after its superclass constructor returns. This also fixes the default
 `Object.toString()` when called from that constructor. Eight focused tests
 passed, including fresh-process recovery in the Object description fixture.
 All three archives that failed during construction or startup at
-`5456b0d` reached `Active` in a targeted three-tick rerun. The short probe
-does not establish gameplay, sustained frame delivery or the complete RMS
-contract.
+`5456b0d` reached `Active` with `17852e6`. The whole 94-archive rerun
+at that revision produced 19 active sessions after three ticks. Ten showed
+non-background pixels or visible controls. The other 75 stopped in
+preparation. Seventeen of the active sessions exhausted the third tick's
+instruction budget.
+
+One newly admitted Canvas MIDlet was also exercised across 12 ticks with
+queued key input and pause, resume and destroy. The original run and a fresh
+process restored from its first visible frame produced a matching frame
+checksum and identical final checkpoints. Gameplay and broad compatibility
+remain to be verified.
 
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
