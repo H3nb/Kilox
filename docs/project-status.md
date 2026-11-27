@@ -450,9 +450,26 @@ remained active through tick 120. A separate run restored that first visible
 frame in a fresh process and replayed 60 ticks with a key tap, pause, resume
 and destroy. Frame sequence hashes and final checkpoint bytes matched.
 
-Two other archives had complete final manifest headers without line
-terminators. Both reached visible Canvas output after the diagnostic added
-the missing terminator in temporary test copies.
+Local revision `644d435` accepts a complete final manifest header or
+continuation at EOF when matching an untrusted MIDlet suite. The generic
+archive parser still requires the final line terminator. Formatting, strict
+all-target Clippy, and 25 focused tests passed, covering package integrity,
+JAD matching, property precedence, launch and heap profile restore.
+
+The same 94 unmodified archives yielded 52 `Active` states at tick three,
+including 49 completed `startApp()` calls and 31 with visible output. The
+two newly admitted MIDlets displayed Canvas output at tick one and were
+still active at tick 120. Each restored that first visible frame in a fresh
+process and replayed 60 ticks with input, pause, resume and destroy. Frame
+sequence hashes and final checkpoint bytes matched. The other 92 three-tick
+outcomes were unchanged.
+
+A private link diagnostic identified `com.nokia.mid.ui.DeviceControl.setLights(int,int)`
+as the first missing method owner for nine remaining archives. Six different
+archives fail the historical identifier policy because they declare a field
+with a Java keyword as its name. An experimental run accepting that name
+advanced three to `Active` at tick three, including one with `startApp()`
+still pending. The executable identifier policy remains unchanged.
 
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
