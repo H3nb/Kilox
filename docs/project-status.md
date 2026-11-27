@@ -437,6 +437,23 @@ integer operand at `areturn` when preparing a malformed variant of an original
 fixture from its class bytes. This is the condition that failed on the
 [separate audit candidate](https://github.com/H3nb/Kilox/actions/runs/45538411260).
 
+Local revision `31f3004` binds `String.valueOf(Object)` in closed class
+bundles. An original fixture verifies null input, String identity, guest
+override results and exceptions, and fresh-process restore after the override
+updates a field. Formatting, strict all-target Clippy, and 777 locked Rust
+tests passed.
+
+The same 94 archives produced 50 `Active` states at tick three, including
+47 completed `startApp()` calls. The other 93 outcomes matched the previous
+revision. The newly admitted MIDlet first drew a Canvas at tick four and
+remained active through tick 120. A separate run restored that first visible
+frame in a fresh process and replayed 60 ticks with a key tap, pause, resume
+and destroy. Frame sequence hashes and final checkpoint bytes matched.
+
+Two other archives had complete final manifest headers without line
+terminators. Both reached visible Canvas output after the diagnostic added
+the missing terminator in temporary test copies.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
