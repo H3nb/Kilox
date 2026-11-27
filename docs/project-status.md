@@ -170,6 +170,17 @@ field, three on TiledLayer, one on LayerManager, and eight advance beyond the
 field descriptor check. Across all 94 JARs, Hashtable is the first field
 blocker in 67. All 94 still stop during preparation.
 
+Local runtime commit `2bf3bbe` binds CLDC Hashtable construction, key lookup
+and mutation, size, clearing, and protected rehash. An original fixture
+checks colliding keys, reentrant mutation, and fresh-process recovery while
+a guest equality call is active. Formatting, strict all-target Clippy, and
+727 locked offline Cargo tests passed on Windows MSVC.
+
+The same 67 archives now pass the Hashtable field check. Of those, 65
+advance beyond field descriptor resolution. The other two next need
+`java.lang.Runtime` and `HttpConnection`. All 94 archives in the additional
+corpus still stop during preparation.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
