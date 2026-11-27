@@ -181,6 +181,18 @@ advance beyond field descriptor resolution. The other two next need
 `java.lang.Runtime` and `HttpConnection`. All 94 archives in the additional
 corpus still stop during preparation.
 
+Local commit `c197647` supports synchronized guest instance methods. The
+fixture checks private and virtual entry, contention, reentrant acquisition,
+exception release, and fresh-process recovery. Formatting, strict all-target
+Clippy, and 729 locked offline Cargo tests passed on Windows MSVC. Static
+synchronized methods remain open.
+
+The additional corpus at `3a55f9d` still stops during preparation. Seven JARs
+that previously stopped on method access flags now report different first
+failures. At the Hashtable baseline, method-resolution diagnostics identified
+`Thread.currentThread()` as the first unresolved symbol in 52 of 94 JARs.
+Those 52 preparation outcomes are unchanged by the monitor increment.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
