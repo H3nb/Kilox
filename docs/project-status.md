@@ -324,6 +324,37 @@ call for 29 archives. The archive that first needed `Byte` now reaches
 Two MIDlets reach `Active` and remain active through 240 ticks. The other 92
 archives stop during preparation.
 
+Local runtime `bc1a68a` binds solid and dotted strokes for lines, rectangles,
+rounded rectangles and arcs. An original guest fixture checks clipping,
+invalid-style rejection and stroke state after a fresh-process paint
+restore. Three archives passed their previous `Graphics.setStrokeStyle()`
+blocker and reached RMS enumeration. Formatting, strict all-target Clippy
+and 766 locked offline tests passed on Windows MSVC.
+
+Local runtime `5456b0d` adds synchronous `Canvas.serviceRepaints()` with
+nested paint and recovery, and `RecordStore.enumerateRecords(..., false)`
+with guest filter and comparator callbacks, cursor operations, rebuild and
+recovery during a callback. Live enumeration updates remain open.
+Formatting, strict all-target Clippy and 771 locked offline tests passed on
+Windows MSVC.
+
+In a startup probe limited to three ticks, 16 of the same 94 MIDlets reached
+`Active` without a runtime fault. Eleven of the 14 new launches previously
+stopped at RMS enumeration and three at `Canvas.serviceRepaints()`. Eight
+showed non-background pixels or visible controls. Another 75 stopped in
+preparation, one failed in its constructor and two failed during startup.
+`StackMapTypeMismatch` was the most frequent preparation failure (24).
+Production and diagnostic outcomes agreed for all 94 archives.
+
+Local commit `17852e6` fixes reading the runtime class of a guest object
+after its superclass constructor returns. This also fixes the default
+`Object.toString()` when called from that constructor. Eight focused tests
+passed, including fresh-process recovery in the Object description fixture.
+All three archives that failed during construction or startup at
+`5456b0d` reached `Active` in a targeted three-tick rerun. The short probe
+does not establish gameplay, sustained frame delivery or the complete RMS
+contract.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
