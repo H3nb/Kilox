@@ -233,6 +233,27 @@ and `Sprite.collidesWith(Sprite, boolean)` in one. All 94 additional archives
 still stop during preparation. Production and diagnostic probes agreed on
 all 94 results.
 
+Local runtime `acf7dcf` includes `Graphics.fillRoundRect()` for
+mutable images and Canvas, and `Image.createImage(String)` for bounded
+immutable PNG resources in the suite. MIDlet preparation accepts up to
+16,384 code bytes per method within a frame-weighted verification budget.
+An original MIDlet resumes inside a long `startApp()` method in a new
+process. Formatting, strict all-target Clippy and 756 locked offline tests
+passed on Windows MSVC.
+
+One of the 94 additional archives that previously stopped on `fillRoundRect()`
+entered `Active` and drew its Canvas on the first tick. It ran for 240
+ticks in the initial probe. A second probe replayed 360 ticks with a queued
+key press and release, then paused, resumed and destroyed the MIDlet.
+Fresh-process restore produced the same frame digest and final checkpoint.
+
+The 14 archives previously stopped by the method bytecode limit advanced to
+method resolution. The 14 that first stopped on named image loading advanced
+past that call. The remaining 93 archives stopped during preparation.
+Production and diagnostic outcomes agreed across all 94. The most common
+first unresolved calls were `RecordStore.enumerateRecords(...)` (24) and
+`Canvas.serviceRepaints()` (16).
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
