@@ -193,6 +193,19 @@ failures. At the Hashtable baseline, method-resolution diagnostics identified
 `Thread.currentThread()` as the first unresolved symbol in 52 of 94 JARs.
 Those 52 preparation outcomes are unchanged by the monitor increment.
 
+Local runtime commit `2d39070` includes MIDP HTTP GET through a host-supplied
+adapter and CLDC `Throwable.toString()` through the runtime class name and
+virtual `getMessage()`. Original fixtures recover a partially read HTTP body
+and a suspended message override in new processes. The HTTP tests use a
+deterministic in-memory adapter. Formatting, strict all-target Clippy, and
+744 locked offline Cargo tests passed on Windows MSVC.
+
+The archive that stopped on `IOException.toString()` now reaches an unresolved
+`Image.createImage(...)` call. The archive that stopped on an `HttpConnection`
+field next needs `TiledLayer`. All 94 additional archives still stop during
+preparation. A constant-pool scan found `Image.createImage(String)` references
+in 88 archives.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
