@@ -217,6 +217,22 @@ checks array names, platform and guest overrides, explicit superclass calls,
 and fresh-process recovery while a hash override runs. The 94 additional
 JAR preparation outcomes stayed the same.
 
+At local runtime commit `28fd6a7`, scheduler-backed `Thread.currentThread()`
+returns the same guest `Thread` object in a started worker and provides a
+stable identity for root and callback contexts. Original fixtures verify
+identity, priority, garbage collection, and fresh-process checkpoint recovery.
+Formatting, strict all-target Clippy and 749 locked offline tests passed on
+Windows MSVC.
+
+All 52 archives that first stopped at `Thread.currentThread()` now pass that
+call's preparation. The next blockers for those archives are
+`Canvas.serviceRepaints()` in 15, a method resource limit in 14,
+`Image.createImage(String)` in 12, `RecordStore.enumerateRecords(...)` in five,
+`Graphics.setStrokeStyle(int)` in three, `StringBuffer.append(Object)` in two,
+and `Sprite.collidesWith(Sprite, boolean)` in one. All 94 additional archives
+still stop during preparation. Production and diagnostic probes agreed on
+all 94 results.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
