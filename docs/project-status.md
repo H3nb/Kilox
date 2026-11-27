@@ -254,6 +254,28 @@ Production and diagnostic outcomes agreed across all 94. The most common
 first unresolved calls were `RecordStore.enumerateRecords(...)` (24) and
 `Canvas.serviceRepaints()` (16).
 
+At local runtime `a5491d7`, `StringBuffer.setLength(int)` truncates or
+pads with NUL, `insert(int, char)` inserts one UTF-16 unit, and
+`append(Object)` dispatches the argument's virtual `toString()`. A
+fixture restores during conversion in a fresh process and checks reentrant
+mutation and monitor release after a guest exception. RMS now reads record
+sizes and copies data into a caller-provided buffer after validating the
+destination range. The original RMS fixture checks persisted sizes, empty
+records, offset reads and preservation of the buffer on a rejected copy.
+Formatting, strict all-target Clippy and 757 locked offline tests passed on
+Windows MSVC.
+
+Four of the 94 additional archives advanced beyond their first StringBuffer
+blocker. One subsequently advanced past both new RMS reads and reached
+`MIDlet.platformRequest(String)`. The previously launched Canvas still
+replayed 360 ticks and completed pause, resume and destroy after
+fresh-process restore. The remaining 93 archives stopped during
+preparation. The most common first unresolved calls were
+`RecordStore.enumerateRecords(...)` (26), `Canvas.serviceRepaints()` (17)
+and `Throwable.printStackTrace()` (6). A separate diagnostic identified
+an unavailable static method owner in ten other archives. Nine reference
+Nokia `DeviceControl` and one references CLDC `java.lang.Byte`.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
