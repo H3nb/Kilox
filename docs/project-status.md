@@ -493,6 +493,26 @@ first visible frame. A private diagnostic located one rejection in the
 throwable trace root check. Formatting, strict all-target Clippy and 780
 locked Rust tests passed at `0ea92ab`.
 
+Local revision `8aade11` handles `MIDlet.platformRequest` through an explicit
+host adapter, with guest-visible errors and fresh-process restore coverage.
+The host retains approval and execution of external requests. Suite
+preparation now shares the GCF exception class across both bindings and
+accepts protected-constructor calls within the same runtime package.
+
+At tick three, 68 of the same 94 archives were `Active`, 64 had completed
+`startApp()`, 32 had displayed a frame, and 26 were blocked during preparation.
+Six additional MIDlets became active through `platformRequest` and one through
+the constructor fix. One other archive advanced to a later unresolved method.
+All three newly active MIDlets selected for longer runs displayed Canvas output
+by tick 18 and were still active at tick 120.
+
+The two previously rejected Canvas checkpoints now accept throwable traces
+rooted in guest Java threads. Both restored in a new process and matched frame
+hashes and final checkpoint bytes across 60 ticks, key input, pause, resume
+and destroy. Rustfmt, strict all-target Clippy and 48 focused Rust tests passed
+on this revision. These runs measure startup and bounded replay. Gameplay,
+broader checkpoint coverage and MIDP conformance remain to be tested.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
