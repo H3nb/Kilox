@@ -206,6 +206,17 @@ field next needs `TiledLayer`. All 94 additional archives still stop during
 preparation. A constant-pool scan found `Image.createImage(String)` references
 in 88 archives.
 
+A release run at `44b18d1` matched all 69 paired package/profile diagnostics.
+Three Canvas applications each replayed 360 ticks across fresh-process
+recovery. An interactive Form passed fresh-process restore, text input,
+command delivery, and a pause/resume/destroy cycle from the checkpoint.
+
+At `b97dde3`, `Object.toString()` combines the runtime class name with
+the unsigned hexadecimal result of virtual `hashCode()`. An original fixture
+checks array names, platform and guest overrides, explicit superclass calls,
+and fresh-process recovery while a hash override runs. The 94 additional
+JAR preparation outcomes stayed the same.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
