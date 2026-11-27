@@ -415,6 +415,28 @@ The one archive that progressed from Sprite collision to
 reached `Active` in a targeted rerun, with `startApp()` still pending at
 tick three. The other 93 archives were not rerun at `752e385`.
 
+The local Large heap profile at `fbfdba7` allows up to 8 MiB of live decoded
+image data. The Legacy and Expanded budgets and the per-image limit remain
+at 4 MiB. Allocation and checkpoint restore enforce the same profile budget.
+An original fixture retained 4.5 MiB of images and restored them in a
+separate process without a checkpoint format change.
+
+The same 94 archives were rerun at `fbfdba7`. At tick three, 49 were
+`Active`, including 46 that completed `startApp()`. 29 had shown a frame.
+The two applications previously stopped by image pressure both reached tick
+120 with visible Canvas output and no pending lifecycle operation. In
+separate runs, each restored its first visible frame in a fresh process,
+replayed 60 ticks with a key tap, and then paused, resumed and destroyed.
+Frame sequence hashes and final checkpoint bytes matched between the original
+and restored runs. These bounded headless runs did not measure gameplay
+coverage or real-time performance. Formatting, strict all-target Clippy and
+776 locked Rust tests passed at `fbfdba7`.
+
+In a separate class-admission check, the same local revision rejected an
+integer operand at `areturn` when preparing a malformed variant of an original
+fixture from its class bytes. This is the condition that failed on the
+[separate audit candidate](https://github.com/H3nb/Kilox/actions/runs/45538411260).
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
