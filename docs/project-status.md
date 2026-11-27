@@ -363,6 +363,31 @@ process restored from its first visible frame produced a matching frame
 checksum and identical final checkpoints. Gameplay and broad compatibility
 remain to be verified.
 
+Local runtime `ccafeaf` checks legacy StackMap reference compatibility
+using inferred-to-declared assignability. The historical CLDC rule lets
+class references match interface declarations. The verifier still infers
+and checks execution state independently. An original regression accepts
+an interface declaration and rejects a concrete type that the inferred
+value cannot satisfy. Formatting, strict all-target Clippy and 772 locked
+offline tests passed on Windows MSVC.
+
+All 24 archives that previously reported `StackMapTypeMismatch` reached
+`Active` by the third tick. The same 94 archive hashes were checked.
+The total rose to 43 active sessions, 27 with non-background pixels or
+visible controls. Thirty-eight active sessions exhausted their third
+tick instruction budget. The other 51 archives stopped in preparation.
+
+Two newly admitted Canvas MIDlets, one from each affected interface
+cohort, completed 60 ticks of a replay with queued input, pause, resume
+and destroy. Each recovered in a fresh process with a matching frame
+checksum and byte-identical final checkpoint.
+
+Local commit `e4c6e35` adds StringBuffer character reads and replacements,
+range and single-code-unit deletions, and signed long insertion.
+The original fixture checks capacity, a retained surrogate, caught
+index faults and immutable String copies after fresh-process recovery.
+All eight focused StringBuffer tests and strict focused Clippy passed.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
