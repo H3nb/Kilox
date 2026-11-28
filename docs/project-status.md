@@ -513,6 +513,13 @@ and destroy. Rustfmt, strict all-target Clippy and 48 focused Rust tests passed
 on this revision. These runs measure startup and bounded replay. Gameplay,
 broader checkpoint coverage and MIDP conformance remain to be tested.
 
+Local revision `3bf4620` admits normal guest access to the concrete Canvas
+callback defaults. The original GameCanvas key callback invokes the inherited
+default and completes fresh-process replay. One previously blocked archive now
+reaches the static synchronized method check, where preparation still stops.
+Rustfmt, strict all-target Clippy and 28 focused Rust tests passed on this
+revision.
+
 The [CLDC milestone](https://github.com/H3nb/Kilox/issues/44) tracks the
 shared verification and library work.
 
